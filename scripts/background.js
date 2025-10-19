@@ -241,6 +241,48 @@ async function fetchAvatarsViaContentScript(urls) {
   }
 }
 
+// Helper function to fetch media via content script
+async function fetchMediaViaContentScript(mediaItems) {
+  if (!mediaItems || mediaItems.length === 0) {
+    console.log('[Background] No media items to fetch');
+    return {};
+  }
+
+  try {
+    // Get active tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) {
+      console.error('[Background] No active tab found');
+      return {};
+    }
+
+    console.log('[Background] Active tab:', tab.id, tab.url);
+    console.log('[Background] Requesting', mediaItems.length, 'media items from content script...');
+
+    // Send message to content script to fetch media
+    return new Promise((resolve, reject) => {
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'fetchMedia',
+        mediaItems: mediaItems
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('[Background] Error fetching media:', chrome.runtime.lastError.message);
+          resolve({});
+        } else if (response && response.success) {
+          console.log('[Background] SUCCESS! Received', Object.keys(response.mediaCache).length, 'media items');
+          resolve(response.mediaCache);
+        } else {
+          console.error('[Background] Failed to fetch media. Response:', response);
+          resolve({});
+        }
+      });
+    });
+  } catch (error) {
+    console.error('[Background] Error in fetchMediaViaContentScript:', error);
+    return {};
+  }
+}
+
 // Helper function to generate HTML archive
 async function generatePostHTML(postData) {
   const media = postData.media?.media || [];
@@ -280,6 +322,11 @@ async function generatePostHTML(postData) {
   console.log('[Background] Avatar cache keys:', Object.keys(avatarCache));
   console.log('[Background] Avatar cache has', Object.keys(avatarCache).length, 'entries');
 
+  // Fetch all media items via content script
+  console.log('[Background] About to fetch media items:', media.length);
+  const mediaCache = await fetchMediaViaContentScript(media);
+  console.log('[Background] Media cache has', Object.keys(mediaCache).length, 'entries');
+
   // Helper to get base64 avatar
   const getAvatar = (url) => {
     const avatar = avatarCache[url] || '';
@@ -287,6 +334,12 @@ async function generatePostHTML(postData) {
       console.warn('[Background] No avatar found for URL:', url);
     }
     return avatar;
+  };
+
+  // Helper to get base64 media
+  const getMedia = (url) => {
+    const mediaData = mediaCache[url] || url; // Fallback to original URL if fetch failed
+    return mediaData;
   };
 
   // Format date
@@ -306,15 +359,17 @@ async function generatePostHTML(postData) {
     if (media.length === 1) {
       const item = media[0];
       if (item.video_url) {
-        mediaHTML = `<video controls class="post-media"><source src="${item.video_url}" type="video/mp4"></video>`;
+        const videoSrc = getMedia(item.video_url);
+        mediaHTML = `<video controls class="post-media"><source src="${videoSrc}" type="video/mp4"></video>`;
       } else if (item.image_url) {
-        mediaHTML = `<img src="${item.image_url}" alt="Post media" class="post-media">`;
+        const imageSrc = getMedia(item.image_url);
+        mediaHTML = `<img src="${imageSrc}" alt="Post media" class="post-media">`;
       }
     } else {
       const carouselItems = media.map((item, index) => {
         const content = item.video_url
-          ? `<video controls class="post-media"><source src="${item.video_url}" type="video/mp4"></video>`
-          : `<img src="${item.image_url}" alt="Post media ${index + 1}" class="post-media">`;
+          ? `<video controls class="post-media"><source src="${getMedia(item.video_url)}" type="video/mp4"></video>`
+          : `<img src="${getMedia(item.image_url)}" alt="Post media ${index + 1}" class="post-media">`;
         return `<div class="carousel-item ${index === 0 ? 'active' : ''}">${content}</div>`;
       }).join('');
 

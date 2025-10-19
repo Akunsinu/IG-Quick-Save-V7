@@ -253,7 +253,7 @@ downloadHtmlBtn.addEventListener('click', async () => {
   }
 
   setButtonLoading(downloadHtmlBtn, true);
-  showStatus('info', '⏳ Downloading profile pictures and generating HTML...');
+  showStatus('info', '⏳ Downloading media and profile pictures for offline HTML...');
 
   const postInfo = extractedData.comments?.post_info || extractedData.media?.post_info || {};
   const folderName = buildFolderName(postInfo);
@@ -280,7 +280,7 @@ downloadHtmlBtn.addEventListener('click', async () => {
     }
   });
 
-  setTimeout(() => setButtonLoading(downloadHtmlBtn, false), 5000);
+  setTimeout(() => setButtonLoading(downloadHtmlBtn, false), 15000);
 });
 
 // Download comments button (shows format options)
