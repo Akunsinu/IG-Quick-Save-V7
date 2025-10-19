@@ -6,6 +6,14 @@ let extractedData = {
   comments: null
 };
 
+// Password protection
+const CORRECT_PASSWORD = 'MM66^^';
+const passwordScreen = document.getElementById('passwordScreen');
+const mainContent = document.getElementById('mainContent');
+const passwordInput = document.getElementById('passwordInput');
+const unlockBtn = document.getElementById('unlockBtn');
+const passwordError = document.getElementById('passwordError');
+
 // DOM elements
 const statusEl = document.getElementById('status');
 const statusTextEl = document.getElementById('statusText');
@@ -22,6 +30,72 @@ const downloadCsvBtn = document.getElementById('downloadCsvBtn');
 const downloadHtmlBtn = document.getElementById('downloadHtmlBtn');
 const downloadScreenshotBtn = document.getElementById('downloadScreenshotBtn');
 const askWhereToSaveCheckbox = document.getElementById('askWhereToSave');
+
+// Check authentication on load
+async function checkAuthentication() {
+  const result = await chrome.storage.local.get(['isAuthenticated']);
+
+  if (result.isAuthenticated) {
+    unlockExtension();
+  }
+}
+
+// Verify password
+function verifyPassword() {
+  const enteredPassword = passwordInput.value;
+
+  if (enteredPassword === CORRECT_PASSWORD) {
+    // Correct password - save authentication state
+    chrome.storage.local.set({ isAuthenticated: true });
+    unlockExtension();
+  } else {
+    // Wrong password
+    passwordError.textContent = '❌ Incorrect password';
+    passwordError.classList.remove('hidden');
+    passwordInput.value = '';
+    passwordInput.focus();
+
+    // Shake animation
+    passwordInput.style.animation = 'shake 0.4s';
+    setTimeout(() => {
+      passwordInput.style.animation = '';
+    }, 400);
+  }
+}
+
+// Unlock extension
+function unlockExtension() {
+  passwordScreen.classList.add('hidden');
+  mainContent.classList.add('unlocked');
+  init();
+}
+
+// Add shake animation
+const style = document.createElement('style');
+style.textContent = `
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-10px); }
+    75% { transform: translateX(10px); }
+  }
+`;
+document.head.appendChild(style);
+
+// Password screen event listeners
+unlockBtn.addEventListener('click', verifyPassword);
+
+passwordInput.addEventListener('keypress', (e) => {
+  if (e.key === 'Enter') {
+    verifyPassword();
+  }
+});
+
+passwordInput.addEventListener('input', () => {
+  passwordError.classList.add('hidden');
+});
+
+// Check authentication on popup load
+checkAuthentication();
 
 // Initialize
 async function init() {
@@ -340,5 +414,4 @@ downloadAllBtn.addEventListener('click', async () => {
   setTimeout(() => setButtonLoading(downloadAllBtn, false), 3000);
 });
 
-// Initialize on load
-init();
+// Note: init() is called from unlockExtension() after password verification

@@ -173,13 +173,91 @@
     .hidden {
       display: none;
     }
+
+    /* Password screen styles */
+    #passwordScreen {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 300px;
+    }
+
+    #passwordScreen h2 {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 8px;
+      color: #262626;
+    }
+
+    #passwordScreen p {
+      font-size: 12px;
+      color: #8e8e8e;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+
+    .password-input-group {
+      width: 100%;
+      margin-bottom: 16px;
+    }
+
+    .password-input-group input {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #dbdbdb;
+      border-radius: 8px;
+      font-size: 14px;
+      text-align: center;
+      letter-spacing: 2px;
+    }
+
+    .password-input-group input:focus {
+      outline: none;
+      border-color: #0095f6;
+    }
+
+    .password-error {
+      color: #c62828;
+      font-size: 12px;
+      margin-top: 8px;
+      text-align: center;
+    }
+
+    #mainContent {
+      display: none;
+    }
+
+    #mainContent.unlocked {
+      display: block;
+    }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>📸 Instagram Downloader</h1>
-    <p>Download media & comments from posts</p>
+  <!-- Password Screen -->
+  <div id="passwordScreen">
+    <div style="text-align: center; margin-bottom: 24px;">
+      <div style="font-size: 48px; margin-bottom: 12px;">🔒</div>
+      <h2>Protected Extension</h2>
+      <p>Enter password to access Instagram Downloader</p>
+    </div>
+
+    <div class="password-input-group">
+      <input type="password" id="passwordInput" placeholder="Enter password" autofocus>
+      <div id="passwordError" class="password-error hidden"></div>
+    </div>
+
+    <button id="unlockBtn" class="primary" style="width: 100%;">
+      Unlock
+    </button>
   </div>
+
+  <!-- Main Content (hidden until unlocked) -->
+  <div id="mainContent">
+    <div class="header">
+      <h1>📸 Instagram Downloader</h1>
+      <p>Download media & comments from posts</p>
+    </div>
 
   <div id="status" class="status info">
     <span id="statusText">Loading...</span>
@@ -240,6 +318,8 @@
       </div>
     </div>
   </div>
+  </div>
+  <!-- End Main Content -->
 
   <script src="popup.js"></script>
 </body>
