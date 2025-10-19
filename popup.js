@@ -19,6 +19,7 @@ const downloadCommentsBtn = document.getElementById('downloadCommentsBtn');
 const downloadAllBtn = document.getElementById('downloadAllBtn');
 const downloadJsonBtn = document.getElementById('downloadJsonBtn');
 const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+const downloadHtmlBtn = document.getElementById('downloadHtmlBtn');
 const downloadScreenshotBtn = document.getElementById('downloadScreenshotBtn');
 const askWhereToSaveCheckbox = document.getElementById('askWhereToSave');
 
@@ -242,6 +243,44 @@ downloadCsvBtn.addEventListener('click', async () => {
   });
 
   setTimeout(() => setButtonLoading(downloadCsvBtn, false), 1500);
+});
+
+// Download HTML archive
+downloadHtmlBtn.addEventListener('click', async () => {
+  if ((!extractedData.media || !extractedData.media.media) && (!extractedData.comments || !extractedData.comments.comments)) {
+    showStatus('error', 'No data to download');
+    return;
+  }
+
+  setButtonLoading(downloadHtmlBtn, true);
+  showStatus('info', '⏳ Downloading profile pictures and generating HTML...');
+
+  const postInfo = extractedData.comments?.post_info || extractedData.media?.post_info || {};
+  const folderName = buildFolderName(postInfo);
+  const username = postInfo.username || 'unknown';
+  const shortcode = postInfo.shortcode || currentShortcode || 'post';
+
+  let dateStr = 'unknown-date';
+  if (postInfo.posted_at) {
+    const date = new Date(postInfo.posted_at);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    dateStr = `${year}-${month}-${day}`;
+  }
+
+  const filename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_archive.html`;
+  const saveAs = askWhereToSaveCheckbox?.checked || false;
+
+  port.postMessage({
+    action: 'downloadHTML',
+    data: {
+      filename: filename,
+      saveAs: saveAs
+    }
+  });
+
+  setTimeout(() => setButtonLoading(downloadHtmlBtn, false), 5000);
 });
 
 // Download comments button (shows format options)
