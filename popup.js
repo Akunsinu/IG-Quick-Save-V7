@@ -240,9 +240,9 @@ downloadMediaBtn.addEventListener('click', async () => {
   setTimeout(() => setButtonLoading(downloadMediaBtn, false), 2000);
 });
 
-// Helper function to build custom folder name: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode
+// Helper function to build custom folder name: username_POSTTYPE_YYYY-MM-DD_shortcode
 function buildFolderName(postInfo) {
-  const username = (postInfo.username || 'unknown').toUpperCase();
+  const username = postInfo.username || 'unknown';
   const postType = (postInfo.post_type || 'post').toUpperCase();
   const shortcode = postInfo.shortcode || currentShortcode || 'post';
 

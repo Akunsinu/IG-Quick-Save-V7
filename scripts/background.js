@@ -105,9 +105,9 @@ async function downloadFile(url, filename, saveAs = false) {
   });
 }
 
-// Helper function to build custom folder name: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode
+// Helper function to build custom folder name: username_POSTTYPE_YYYY-MM-DD_shortcode
 function buildFolderName(postInfo) {
-  const username = (postInfo.username || 'unknown').toUpperCase();
+  const username = postInfo.username || 'unknown';
   const postType = (postInfo.post_type || 'post').toUpperCase();
   const shortcode = postInfo.shortcode || 'post';
 
@@ -621,10 +621,14 @@ chrome.runtime.onConnect.addListener((port) => {
             }
           }
 
-          // Download comments as JSON
+          // Download comments as JSON and CSV
           if (currentData.comments && currentData.comments.comments) {
-            const filename = `Instagram/${folderName}/comments/${filePrefix}_comments.json`;
-            await downloadJSON(currentData.comments, filename, false);
+            const jsonFilename = `Instagram/${folderName}/comments/${filePrefix}_comments.json`;
+            await downloadJSON(currentData.comments, jsonFilename, false);
+
+            const csv = commentsToCSV(currentData.comments.comments);
+            const csvFilename = `Instagram/${folderName}/comments/${filePrefix}_comments.csv`;
+            await downloadCSV(csv, csvFilename, false);
           }
 
           // Download post metadata
@@ -824,10 +828,14 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           }
         }
 
-        // Download comments
+        // Download comments as JSON and CSV
         if (currentData.comments && currentData.comments.comments) {
-          const filename = `Instagram/${folderName}/comments/${filePrefix}_comments.json`;
-          await downloadJSON(currentData.comments, filename, false);
+          const jsonFilename = `Instagram/${folderName}/comments/${filePrefix}_comments.json`;
+          await downloadJSON(currentData.comments, jsonFilename, false);
+
+          const csv = commentsToCSV(currentData.comments.comments);
+          const csvFilename = `Instagram/${folderName}/comments/${filePrefix}_comments.csv`;
+          await downloadCSV(csv, csvFilename, false);
         }
 
         // Download metadata
@@ -840,7 +848,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         const metadataFilename = `Instagram/${folderName}/${filePrefix}_metadata.json`;
         await downloadJSON(metadata, metadataFilename, false);
 
-        // Download HTML archive
+        // Download HTML archive (wait a bit to ensure content script is ready for avatar fetching)
+        await new Promise(resolve => setTimeout(resolve, 1000));
         const htmlContent = await generatePostHTML(currentData, filePrefix);
         const htmlFilename = `Instagram/${folderName}/${filePrefix}_archive.html`;
         await downloadHTML(htmlContent, htmlFilename, false);
