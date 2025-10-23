@@ -149,7 +149,9 @@
         // Check if there are more replies to fetch
         if (data.has_more_tail_child_comments && data.next_min_id) {
           minId = data.next_min_id;
-          await new Promise(resolve => setTimeout(resolve, 300));
+          // Random delay between 500-800ms to avoid rate limiting
+          const delay = 500 + Math.floor(Math.random() * 300);
+          await new Promise(resolve => setTimeout(resolve, delay));
         } else {
           hasMore = false;
         }
@@ -230,7 +232,10 @@
         if (data.has_more_comments && data.next_max_id) {
           maxId = data.next_max_id;
           console.log('[IG DL v7] More comments available, next_max_id:', maxId);
-          await new Promise(resolve => setTimeout(resolve, 500));
+          // Random delay between 1000-1500ms to avoid rate limiting
+          const delay = 1000 + Math.floor(Math.random() * 500);
+          console.log('[IG DL v7] Waiting', delay, 'ms before next request...');
+          await new Promise(resolve => setTimeout(resolve, delay));
         } else {
           hasMore = false;
           console.log('[IG DL v7] No more main comments to fetch');
@@ -255,8 +260,10 @@
 
           console.log(`[IG DL v7] ✅ Got ${replies.length} replies`);
 
-          // Small delay between reply fetches
-          await new Promise(resolve => setTimeout(resolve, 300));
+          // Random delay between 800-1200ms to avoid rate limiting
+          const delay = 800 + Math.floor(Math.random() * 400);
+          console.log(`[IG DL v7] Waiting ${delay}ms before fetching next comment's replies...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
         }
       }
 
