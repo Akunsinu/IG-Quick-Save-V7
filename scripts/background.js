@@ -105,20 +105,20 @@ async function downloadFile(url, filename, saveAs = false) {
   });
 }
 
-// Helper function to build custom folder name: username_POSTTYPE_YYYY-MM-DD_shortcode
+// Helper function to build custom folder name: username_POSTTYPE_YYYYMMDD_shortcode
 function buildFolderName(postInfo) {
   const username = postInfo.username || 'unknown';
   const postType = (postInfo.post_type || 'post').toUpperCase();
   const shortcode = postInfo.shortcode || 'post';
 
-  // Format date as YYYY-MM-DD
+  // Format date as YYYYMMDD (no dashes)
   let dateStr = 'unknown-date';
   if (postInfo.posted_at) {
     const date = new Date(postInfo.posted_at);
     const year = date.getFullYear();
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
-    dateStr = `${year}-${month}-${day}`;
+    dateStr = `${year}${month}${day}`;
   }
 
   return `${username}_${postType}_${dateStr}_${shortcode}`;
