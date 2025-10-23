@@ -79,7 +79,7 @@
       // Return basic page information
       sendResponse({
         url: window.location.href,
-        isPostPage: /\/p\/[^\/]+/.test(window.location.href)
+        isPostPage: /\/(p|reel)\/[^\/]+/.test(window.location.href)
       });
     } else if (request.action === 'fetchAvatars') {
       // Fetch multiple avatar URLs and convert to base64

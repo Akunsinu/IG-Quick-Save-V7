@@ -10,13 +10,14 @@
   function parsePostDataFromScripts() {
     try {
       const url = window.location.href;
-      const shortcodeMatch = url.match(/\/p\/([^\/\?]+)/);
+      const shortcodeMatch = url.match(/\/(p|reel)\/([^\/\?]+)/);
 
       if (!shortcodeMatch) {
-        return { error: 'Not on a post page' };
+        return { error: 'Not on a post or reel page' };
       }
 
-      const shortcode = shortcodeMatch[1];
+      const contentType = shortcodeMatch[1]; // 'p' or 'reel'
+      const shortcode = shortcodeMatch[2];
 
       const scripts = document.querySelectorAll('script[type="application/json"]');
 
@@ -83,7 +84,8 @@
   async function extractPostData() {
     if (cachedPostData) {
       const url = window.location.href;
-      const shortcode = url.match(/\/p\/([^\/\?]+)/)[1];
+      const shortcodeMatch = url.match(/\/(p|reel)\/([^\/\?]+)/);
+      const shortcode = shortcodeMatch ? shortcodeMatch[2] : '';
       return { shortcode, post: cachedPostData, method: 'cached' };
     }
 
@@ -289,12 +291,13 @@
       const totalReplies = comments.reduce((sum, comment) => sum + (comment.replies?.length || 0), 0);
 
       // Build post metadata
+      const urlType = window.location.href.includes('/reel/') ? 'reel' : 'p';
       const postInfo = {
         username: post.owner?.username || 'unknown',
         full_name: post.owner?.full_name || '',
         user_id: post.owner?.pk || post.owner?.id || '',
         profile_pic_url: post.owner?.profile_pic_url || '',
-        post_url: 'https://www.instagram.com/p/' + post.code,
+        post_url: `https://www.instagram.com/${urlType}/` + post.code,
         shortcode: post.code,
         caption: post.caption?.text || '',
         like_count: post.like_count || 0,
@@ -345,12 +348,13 @@
       }
 
       // Build post metadata (same as in extractComments)
+      const urlType = window.location.href.includes('/reel/') ? 'reel' : 'p';
       const postInfo = {
         username: post.owner?.username || 'unknown',
         full_name: post.owner?.full_name || '',
         user_id: post.owner?.pk || post.owner?.id || '',
         profile_pic_url: post.owner?.profile_pic_url || '',
-        post_url: 'https://www.instagram.com/p/' + post.code,
+        post_url: `https://www.instagram.com/${urlType}/` + post.code,
         shortcode: post.code,
         caption: post.caption?.text || '',
         like_count: post.like_count || 0,

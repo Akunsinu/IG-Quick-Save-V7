@@ -5,6 +5,17 @@ let currentData = {
   media: null
 };
 
+// Batch processing state
+let batchState = {
+  isProcessing: false,
+  queue: [],
+  currentIndex: 0,
+  successCount: 0,
+  failedUrls: [],
+  tabId: null,
+  port: null
+};
+
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   console.log('[Background] Received message:', message.type);
@@ -284,7 +295,7 @@ async function fetchMediaViaContentScript(mediaItems) {
 }
 
 // Helper function to generate HTML archive
-async function generatePostHTML(postData) {
+async function generatePostHTML(postData, mediaFilePrefix = null) {
   const media = postData.media?.media || [];
   const comments = postData.comments?.comments || [];
   const post_info = postData.media?.post_info || postData.comments?.post_info || {};
@@ -316,16 +327,11 @@ async function generatePostHTML(postData) {
   }
   collectAvatars(comments);
 
-  // Fetch all profile pictures via content script
+  // Fetch all profile pictures via content script (keep avatars as base64 since they're small)
   console.log('[Background] About to fetch avatars, URLs:', Array.from(profilePicUrls));
   const avatarCache = await fetchAvatarsViaContentScript(Array.from(profilePicUrls));
   console.log('[Background] Avatar cache keys:', Object.keys(avatarCache));
   console.log('[Background] Avatar cache has', Object.keys(avatarCache).length, 'entries');
-
-  // Fetch all media items via content script
-  console.log('[Background] About to fetch media items:', media.length);
-  const mediaCache = await fetchMediaViaContentScript(media);
-  console.log('[Background] Media cache has', Object.keys(mediaCache).length, 'entries');
 
   // Helper to get base64 avatar
   const getAvatar = (url) => {
@@ -336,10 +342,16 @@ async function generatePostHTML(postData) {
     return avatar;
   };
 
-  // Helper to get base64 media
-  const getMedia = (url) => {
-    const mediaData = mediaCache[url] || url; // Fallback to original URL if fetch failed
-    return mediaData;
+  // Helper to get media path (use relative paths instead of base64)
+  const getMedia = (item, index) => {
+    if (mediaFilePrefix) {
+      // Use relative file path
+      const extension = item.video_url ? 'mp4' : 'jpg';
+      return `./media/${mediaFilePrefix}_media_${index + 1}.${extension}`;
+    } else {
+      // Fallback to original URL
+      return item.video_url || item.image_url;
+    }
   };
 
   // Format date
@@ -359,17 +371,17 @@ async function generatePostHTML(postData) {
     if (media.length === 1) {
       const item = media[0];
       if (item.video_url) {
-        const videoSrc = getMedia(item.video_url);
+        const videoSrc = getMedia(item, 0);
         mediaHTML = `<video controls class="post-media"><source src="${videoSrc}" type="video/mp4"></video>`;
       } else if (item.image_url) {
-        const imageSrc = getMedia(item.image_url);
+        const imageSrc = getMedia(item, 0);
         mediaHTML = `<img src="${imageSrc}" alt="Post media" class="post-media">`;
       }
     } else {
       const carouselItems = media.map((item, index) => {
         const content = item.video_url
-          ? `<video controls class="post-media"><source src="${getMedia(item.video_url)}" type="video/mp4"></video>`
-          : `<img src="${getMedia(item.image_url)}" alt="Post media ${index + 1}" class="post-media">`;
+          ? `<video controls class="post-media"><source src="${getMedia(item, index)}" type="video/mp4"></video>`
+          : `<img src="${getMedia(item, index)}" alt="Post media ${index + 1}" class="post-media">`;
         return `<div class="carousel-item ${index === 0 ? 'active' : ''}">${content}</div>`;
       }).join('');
 
@@ -440,7 +452,7 @@ async function generatePostHTML(postData) {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${escapeHTML(username)} - Instagram Post Archive</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#fafafa;color:#262626;padding:20px}.container{max-width:935px;margin:0 auto;background:white;border:1px solid #dbdbdb;border-radius:8px;overflow:hidden}.post-header{padding:16px;border-bottom:1px solid #efefef;display:flex;align-items:center;justify-content:space-between}.user-info{display:flex;align-items:center;gap:12px}.profile-avatar{width:40px;height:40px;border-radius:50%;object-fit:cover;border:1px solid #dbdbdb}.profile-avatar-placeholder{width:40px;height:40px;border-radius:50%;background:#dbdbdb}.username{font-weight:600;font-size:14px}.full-name{color:#8e8e8e;font-size:12px}.post-date{color:#8e8e8e;font-size:12px}.media-container{background:#000;position:relative;width:100%;min-height:400px;display:flex;align-items:center;justify-content:center}.post-media{width:100%;max-height:600px;object-fit:contain}.carousel{position:relative;width:100%}.carousel-container{position:relative;width:100%;min-height:400px;background:#000}.carousel-item{display:none;width:100%}.carousel-item.active{display:flex;align-items:center;justify-content:center}.carousel-btn{position:absolute;top:50%;transform:translateY(-50%);background:rgba(0,0,0,0.5);color:white;border:none;padding:10px 15px;cursor:pointer;font-size:18px;border-radius:4px;z-index:10}.carousel-btn:hover{background:rgba(0,0,0,0.8)}.carousel-btn.prev{left:10px}.carousel-btn.next{right:10px}.carousel-dots{text-align:center;padding:10px;background:#000}.dot{height:8px;width:8px;margin:0 4px;background-color:#bbb;border-radius:50%;display:inline-block;cursor:pointer}.dot.active{background-color:#0095f6}.post-stats{padding:16px;border-bottom:1px solid #efefef}.stats-row{display:flex;gap:16px;margin-bottom:8px}.stat{font-weight:600;font-size:14px}.caption{padding:16px;border-bottom:1px solid #efefef}.caption-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}.caption-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid #dbdbdb}.caption-avatar-placeholder{width:32px;height:32px;border-radius:50%;background:#dbdbdb}.caption-username{font-weight:600}.caption-text{white-space:pre-wrap;word-wrap:break-word;display:block}.comments-section{max-height:500px;overflow-y:auto;padding:16px}.comments-header{font-weight:600;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #efefef}.comment{margin-bottom:16px}.comment.reply{margin-left:32px;padding-left:16px;border-left:2px solid #efefef}.comment-content{display:flex;gap:12px;align-items:flex-start}.comment-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid #dbdbdb;flex-shrink:0}.comment-avatar-placeholder{width:32px;height:32px;border-radius:50%;background:#dbdbdb;flex-shrink:0}.comment-body{flex:1}.comment-header{display:flex;align-items:center;gap:8px;margin-bottom:4px}.comment-username{font-weight:600;font-size:14px}.comment-date{color:#8e8e8e;font-size:12px}.comment-text{font-size:14px;margin-bottom:4px;white-space:pre-wrap;word-wrap:break-word}.comment-footer{display:flex;gap:12px;color:#8e8e8e;font-size:12px}.comment-likes{font-weight:600}.replies{margin-top:12px}.no-comments{text-align:center;color:#8e8e8e;padding:40px}.footer{padding:16px;background:#fafafa;border-top:1px solid #efefef;text-align:center;font-size:12px;color:#8e8e8e}.footer a{color:#0095f6;text-decoration:none}.footer a:hover{text-decoration:underline}</style>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#fafafa;color:#262626;padding:20px;display:flex;justify-content:center;align-items:flex-start}.container{max-width:470px;width:100%;margin:0 auto;background:white;border:1px solid #dbdbdb;border-radius:8px;overflow:hidden}.post-header{padding:16px;border-bottom:1px solid #efefef;display:flex;align-items:center;justify-content:space-between}.user-info{display:flex;align-items:center;gap:12px}.profile-avatar{width:40px;height:40px;border-radius:50%;object-fit:cover;border:1px solid #dbdbdb}.profile-avatar-placeholder{width:40px;height:40px;border-radius:50%;background:#dbdbdb}.username{font-weight:600;font-size:14px}.full-name{color:#8e8e8e;font-size:12px}.post-date{color:#8e8e8e;font-size:12px}.media-container{background:#000;position:relative;display:flex;align-items:center;justify-content:center;min-height:600px;overflow:hidden;width:100%}img.post-media{max-width:100%;max-height:80vh;width:auto;height:auto;object-fit:contain}video.post-media{height:80vh;width:100%;max-width:100%;display:block;object-fit:cover}.carousel{position:relative;min-height:600px;width:100%}.carousel-container{position:relative;min-height:600px;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden;width:100%}.carousel-item{display:none;width:100%;height:100%;align-items:center;justify-content:center}.carousel-item.active{display:flex}.carousel-btn{position:absolute;top:50%;transform:translateY(-50%);background:rgba(0,0,0,0.5);color:white;border:none;padding:10px 15px;cursor:pointer;font-size:18px;border-radius:4px;z-index:10}.carousel-btn:hover{background:rgba(0,0,0,0.8)}.carousel-btn.prev{left:10px}.carousel-btn.next{right:10px}.carousel-dots{text-align:center;padding:10px;background:#000}.dot{height:8px;width:8px;margin:0 4px;background-color:#bbb;border-radius:50%;display:inline-block;cursor:pointer}.dot.active{background-color:#0095f6}.post-stats{padding:16px;border-bottom:1px solid #efefef}.stats-row{display:flex;gap:16px;margin-bottom:8px}.stat{font-weight:600;font-size:14px}.caption{padding:16px;border-bottom:1px solid #efefef}.caption-header{display:flex;align-items:center;gap:8px;margin-bottom:8px}.caption-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid #dbdbdb}.caption-avatar-placeholder{width:32px;height:32px;border-radius:50%;background:#dbdbdb}.caption-username{font-weight:600}.caption-text{white-space:pre-wrap;word-wrap:break-word;display:block}.comments-section{max-height:500px;overflow-y:auto;padding:16px}.comments-header{font-weight:600;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #efefef}.comment{margin-bottom:16px}.comment.reply{margin-left:32px;padding-left:16px;border-left:2px solid #efefef}.comment-content{display:flex;gap:12px;align-items:flex-start}.comment-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;border:1px solid #dbdbdb;flex-shrink:0}.comment-avatar-placeholder{width:32px;height:32px;border-radius:50%;background:#dbdbdb;flex-shrink:0}.comment-body{flex:1}.comment-header{display:flex;align-items:center;gap:8px;margin-bottom:4px}.comment-username{font-weight:600;font-size:14px}.comment-date{color:#8e8e8e;font-size:12px}.comment-text{font-size:14px;margin-bottom:4px;white-space:pre-wrap;word-wrap:break-word}.comment-footer{display:flex;gap:12px;color:#8e8e8e;font-size:12px}.comment-likes{font-weight:600}.replies{margin-top:12px}.no-comments{text-align:center;color:#8e8e8e;padding:40px}.footer{padding:16px;background:#fafafa;border-top:1px solid #efefef;text-align:center;font-size:12px;color:#8e8e8e}.footer a{color:#0095f6;text-decoration:none}.footer a:hover{text-decoration:underline}</style>
 </head>
 <body>
 <div class="container">
@@ -550,7 +562,21 @@ chrome.runtime.onConnect.addListener((port) => {
           // Download HTML archive
           const { filename, saveAs } = msg.data;
 
-          const htmlContent = await generatePostHTML(currentData);
+          // Build file prefix for relative media paths
+          const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
+          const username = postInfo.username || 'unknown';
+          const shortcode = postInfo.shortcode || 'post';
+          let dateStr = 'unknown-date';
+          if (postInfo.posted_at) {
+            const date = new Date(postInfo.posted_at);
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            dateStr = `${year}-${month}-${day}`;
+          }
+          const mediaFilePrefix = `${username}_${dateStr}_${shortcode}`;
+
+          const htmlContent = await generatePostHTML(currentData, mediaFilePrefix);
           await downloadHTML(htmlContent, filename, saveAs);
 
           port.postMessage({
@@ -635,7 +661,8 @@ chrome.runtime.onConnect.addListener((port) => {
           await downloadJSON(metadata, metadataFilename, false);
 
           // Download HTML archive
-          const htmlContent = await generatePostHTML(currentData);
+          const mediaFilePrefix = `${username}_${dateStr}_${shortcode}`;
+          const htmlContent = await generatePostHTML(currentData, mediaFilePrefix);
           const htmlFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_archive.html`;
           await downloadHTML(htmlContent, htmlFilename, false);
 
@@ -672,6 +699,34 @@ chrome.runtime.onConnect.addListener((port) => {
               });
             }
           });
+        } else if (msg.action === 'startBatch') {
+          // Start batch processing
+          const { urls } = msg.data;
+          batchState.queue = urls;
+          batchState.currentIndex = 0;
+          batchState.successCount = 0;
+          batchState.failedUrls = [];
+          batchState.isProcessing = true;
+          batchState.port = port;
+
+          // Get current tab
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          batchState.tabId = tab.id;
+
+          console.log('[Background] Starting batch processing:', urls.length, 'URLs');
+          processNextBatchUrl();
+
+        } else if (msg.action === 'stopBatch') {
+          // Stop batch processing
+          console.log('[Background] Stopping batch processing');
+          batchState.isProcessing = false;
+          port.postMessage({
+            type: 'batchStopped',
+            data: {
+              successCount: batchState.successCount,
+              failedUrls: batchState.failedUrls
+            }
+          });
         }
       } catch (error) {
         console.error('[Background] Error:', error);
@@ -681,6 +736,176 @@ chrome.runtime.onConnect.addListener((port) => {
         });
       }
     });
+
+    // Store port reference for batch processing
+    port.onDisconnect.addListener(() => {
+      if (batchState.port === port) {
+        batchState.port = null;
+      }
+    });
+  }
+});
+
+// Batch processing functions
+async function processNextBatchUrl() {
+  if (!batchState.isProcessing) {
+    console.log('[Background] Batch processing stopped');
+    return;
+  }
+
+  if (batchState.currentIndex >= batchState.queue.length) {
+    // Batch complete
+    console.log('[Background] Batch processing complete');
+    batchState.isProcessing = false;
+
+    if (batchState.port) {
+      batchState.port.postMessage({
+        type: 'batchComplete',
+        data: {
+          successCount: batchState.successCount,
+          failedUrls: batchState.failedUrls,
+          total: batchState.queue.length
+        }
+      });
+    }
+    return;
+  }
+
+  const url = batchState.queue[batchState.currentIndex];
+  console.log('[Background] Processing URL', batchState.currentIndex + 1, '/', batchState.queue.length, ':', url);
+
+  // Send progress update to popup
+  if (batchState.port) {
+    batchState.port.postMessage({
+      type: 'batchProgress',
+      data: {
+        current: batchState.currentIndex + 1,
+        total: batchState.queue.length,
+        url: url,
+        successCount: batchState.successCount,
+        failedUrls: batchState.failedUrls
+      }
+    });
+  }
+
+  try {
+    // Navigate to the URL
+    await chrome.tabs.update(batchState.tabId, { url: url });
+    // Wait for page load and extraction - handled by tab update listener
+  } catch (error) {
+    console.error('[Background] Failed to navigate to URL:', url, error);
+    batchState.failedUrls.push({ url, error: error.message });
+    batchState.currentIndex++;
+
+    // Add delay before next URL
+    setTimeout(() => processNextBatchUrl(), 3000 + Math.random() * 2000);
+  }
+}
+
+// Listen for tab updates to detect page loads during batch processing
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (!batchState.isProcessing || tabId !== batchState.tabId) {
+    return;
+  }
+
+  // Check if page is fully loaded
+  if (changeInfo.status === 'complete' && tab.url && tab.url.includes('instagram.com/p/')) {
+    console.log('[Background] Page loaded, starting auto-extraction for batch processing');
+
+    // Reset current data
+    currentData = {
+      postData: null,
+      comments: null,
+      media: null
+    };
+
+    // Wait a bit for page to fully render
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    try {
+      // Trigger extraction via content script
+      await chrome.tabs.sendMessage(tabId, { action: 'extractMedia' });
+      await chrome.tabs.sendMessage(tabId, { action: 'extractComments' });
+
+      // Wait for extractions to complete
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
+      // Trigger download all
+      if (currentData.media || currentData.comments) {
+        const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
+        const folderName = buildFolderName(postInfo);
+        const username = postInfo.username || 'unknown';
+        const shortcode = postInfo.shortcode || 'post';
+
+        let dateStr = 'unknown-date';
+        if (postInfo.posted_at) {
+          const date = new Date(postInfo.posted_at);
+          const year = date.getFullYear();
+          const month = String(date.getMonth() + 1).padStart(2, '0');
+          const day = String(date.getDate()).padStart(2, '0');
+          dateStr = `${year}-${month}-${day}`;
+        }
+
+        // Download media
+        if (currentData.media && currentData.media.media) {
+          const folderPrefix = `Instagram/${folderName}/media`;
+          for (let i = 0; i < currentData.media.media.length; i++) {
+            const item = currentData.media.media[i];
+            const url = item.video_url || item.image_url;
+            const extension = item.video_url ? 'mp4' : 'jpg';
+            const filename = `${folderPrefix}/${username}_${dateStr}_${shortcode}_media_${i + 1}.${extension}`;
+            await downloadFile(url, filename, false);
+          }
+        }
+
+        // Download comments
+        if (currentData.comments && currentData.comments.comments) {
+          const filename = `Instagram/${folderName}/comments/${username}_${dateStr}_${shortcode}_comments.json`;
+          await downloadJSON(currentData.comments, filename, false);
+        }
+
+        // Download metadata
+        const metadata = {
+          ...postInfo,
+          downloaded_at: new Date().toISOString(),
+          media_count: currentData.media?.media?.length || 0,
+          comment_count: currentData.comments?.total || 0
+        };
+        const metadataFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_metadata.json`;
+        await downloadJSON(metadata, metadataFilename, false);
+
+        // Download HTML archive
+        const mediaFilePrefix = `${username}_${dateStr}_${shortcode}`;
+        const htmlContent = await generatePostHTML(currentData, mediaFilePrefix);
+        const htmlFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_archive.html`;
+        await downloadHTML(htmlContent, htmlFilename, false);
+
+        // Capture screenshot
+        try {
+          const dataUrl = await chrome.tabs.captureVisibleTab(null, {
+            format: 'png',
+            quality: 100
+          });
+          const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
+          const screenshotFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_screenshot.png`;
+          await downloadFile(croppedDataUrl, screenshotFilename, false);
+        } catch (error) {
+          console.error('[Background] Screenshot failed:', error);
+        }
+
+        console.log('[Background] Successfully downloaded:', tab.url);
+        batchState.successCount++;
+      } else {
+        throw new Error('Failed to extract data');
+      }
+    } catch (error) {
+      console.error('[Background] Failed to process URL:', tab.url, error);
+      batchState.failedUrls.push({ url: tab.url, error: error.message });
+    }
+
+    // Move to next URL with delay
+    batchState.currentIndex++;
+    setTimeout(() => processNextBatchUrl(), 3000 + Math.random() * 2000);
   }
 });
 

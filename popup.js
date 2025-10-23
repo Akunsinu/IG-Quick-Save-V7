@@ -109,23 +109,33 @@ async function init() {
       showStatus('error', msg.message);
     } else if (msg.type === 'currentData') {
       handleExtractedData(msg.data);
+    } else if (msg.type === 'batchProgress') {
+      updateBatchProgress(msg.data);
+    } else if (msg.type === 'batchComplete') {
+      handleBatchComplete(msg.data);
+    } else if (msg.type === 'batchStopped') {
+      handleBatchStopped(msg.data);
     }
   });
 
-  // Check if we're on a post page
+  // Check if we're on a post or reel page
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
 
-  if (!tab.url.includes('instagram.com/p/')) {
-    showStatus('warning', '⚠️ Please open an Instagram post to use this extension');
+  const isPost = tab.url.includes('instagram.com/p/');
+  const isReel = tab.url.includes('instagram.com/reel/');
+
+  if (!isPost && !isReel) {
+    showStatus('warning', '⚠️ Please open an Instagram post or reel to use this extension');
     extractBtn.disabled = true;
     return;
   }
 
-  // Extract shortcode from URL
-  const match = tab.url.match(/\/p\/([^\/]+)/);
+  // Extract shortcode from URL (works for both /p/ and /reel/)
+  const match = tab.url.match(/\/(p|reel)\/([^\/]+)/);
   if (match) {
-    currentShortcode = match[1];
-    showStatus('info', '✅ Ready to extract data from this post');
+    currentShortcode = match[2];
+    const contentType = match[1] === 'reel' ? 'reel' : 'post';
+    showStatus('info', `✅ Ready to extract data from this ${contentType}`);
   }
 
   // Request any previously extracted data from background
@@ -413,5 +423,189 @@ downloadAllBtn.addEventListener('click', async () => {
 
   setTimeout(() => setButtonLoading(downloadAllBtn, false), 3000);
 });
+
+// Batch Download Controls
+const toggleBatchBtn = document.getElementById('toggleBatchBtn');
+const batchContent = document.getElementById('batchContent');
+const batchUrls = document.getElementById('batchUrls');
+const urlCount = document.getElementById('urlCount');
+const startBatchBtn = document.getElementById('startBatchBtn');
+const stopBatchBtn = document.getElementById('stopBatchBtn');
+const batchProgress = document.getElementById('batchProgress');
+const batchStatus = document.getElementById('batchStatus');
+const batchProgressText = document.getElementById('batchProgressText');
+const batchProgressBar = document.getElementById('batchProgressBar');
+const batchCurrentUrl = document.getElementById('batchCurrentUrl');
+const batchResults = document.getElementById('batchResults');
+const successCount = document.getElementById('successCount');
+const failedSection = document.getElementById('failedSection');
+const failedCount = document.getElementById('failedCount');
+const failedUrls = document.getElementById('failedUrls');
+
+// Toggle batch section
+toggleBatchBtn.addEventListener('click', () => {
+  if (batchContent.classList.contains('hidden')) {
+    batchContent.classList.remove('hidden');
+    toggleBatchBtn.textContent = 'Hide';
+  } else {
+    batchContent.classList.add('hidden');
+    toggleBatchBtn.textContent = 'Show';
+  }
+});
+
+// Update URL count
+batchUrls.addEventListener('input', () => {
+  const urls = parseUrls(batchUrls.value);
+  urlCount.textContent = `${urls.length} URL${urls.length !== 1 ? 's' : ''}`;
+
+  if (urls.length > 0) {
+    urlCount.style.color = '#2e7d32';
+  } else {
+    urlCount.style.color = '#8e8e8e';
+  }
+});
+
+// Parse and validate URLs
+function parseUrls(text) {
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  const validUrls = [];
+  const seen = new Set();
+
+  for (const line of lines) {
+    // Match Instagram post URLs
+    if (line.match(/instagram\.com\/(p|reel)\/[^\/\s]+/)) {
+      // Normalize URL
+      const match = line.match(/instagram\.com\/(p|reel)\/([^\/\s]+)/);
+      if (match) {
+        const shortcode = match[2];
+        const normalizedUrl = `https://www.instagram.com/${match[1]}/${shortcode}/`;
+
+        // Remove duplicates
+        if (!seen.has(normalizedUrl)) {
+          seen.add(normalizedUrl);
+          validUrls.push(normalizedUrl);
+        }
+      }
+    }
+  }
+
+  return validUrls;
+}
+
+// Start batch processing
+startBatchBtn.addEventListener('click', () => {
+  const urls = parseUrls(batchUrls.value);
+
+  if (urls.length === 0) {
+    showStatus('error', '❌ No valid Instagram URLs found');
+    return;
+  }
+
+  // Confirm before starting
+  const confirmed = confirm(`Start batch download for ${urls.length} post${urls.length !== 1 ? 's' : ''}?\n\nThis will take approximately ${Math.ceil(urls.length * 10 / 60)} minutes.`);
+
+  if (!confirmed) {
+    return;
+  }
+
+  // Reset UI
+  batchProgress.classList.remove('hidden');
+  batchResults.classList.add('hidden');
+  failedSection.classList.add('hidden');
+  successCount.textContent = '0';
+  failedCount.textContent = '0';
+  failedUrls.innerHTML = '';
+
+  // Disable controls
+  startBatchBtn.disabled = true;
+  stopBatchBtn.disabled = false;
+  batchUrls.disabled = true;
+
+  // Start batch
+  port.postMessage({
+    action: 'startBatch',
+    data: { urls }
+  });
+
+  showStatus('info', `🚀 Starting batch download of ${urls.length} posts...`);
+});
+
+// Stop batch processing
+stopBatchBtn.addEventListener('click', () => {
+  port.postMessage({
+    action: 'stopBatch'
+  });
+
+  startBatchBtn.disabled = false;
+  stopBatchBtn.disabled = true;
+  batchUrls.disabled = false;
+
+  showStatus('warning', '⏹️ Batch processing stopped');
+});
+
+// Update batch progress
+function updateBatchProgress(data) {
+  const { current, total, url, successCount: success, failedUrls: failed } = data;
+
+  batchProgressText.textContent = `${current}/${total}`;
+  batchProgressBar.style.width = `${(current / total) * 100}%`;
+  batchCurrentUrl.textContent = url;
+  batchStatus.textContent = `Processing post ${current} of ${total}...`;
+
+  successCount.textContent = success;
+
+  if (failed.length > 0) {
+    failedSection.classList.remove('hidden');
+    failedCount.textContent = failed.length;
+    failedUrls.innerHTML = failed.map(f => `<div>${f.url}<br><span style="color: #999;">Error: ${f.error}</span></div>`).join('<br>');
+  }
+
+  batchResults.classList.remove('hidden');
+}
+
+// Handle batch complete
+function handleBatchComplete(data) {
+  const { successCount: success, failedUrls: failed, total } = data;
+
+  batchProgress.classList.add('hidden');
+  startBatchBtn.disabled = false;
+  stopBatchBtn.disabled = true;
+  batchUrls.disabled = false;
+
+  successCount.textContent = success;
+
+  if (failed.length > 0) {
+    failedSection.classList.remove('hidden');
+    failedCount.textContent = failed.length;
+    failedUrls.innerHTML = failed.map(f => `<div>${f.url}<br><span style="color: #999;">Error: ${f.error}</span></div>`).join('<br>');
+
+    showStatus('warning', `✅ Batch complete! ${success}/${total} succeeded, ${failed.length} failed`);
+  } else {
+    showStatus('success', `🎉 Batch complete! All ${success} posts downloaded successfully!`);
+  }
+
+  batchResults.classList.remove('hidden');
+}
+
+// Handle batch stopped
+function handleBatchStopped(data) {
+  const { successCount: success, failedUrls: failed } = data;
+
+  batchProgress.classList.add('hidden');
+  startBatchBtn.disabled = false;
+  stopBatchBtn.disabled = true;
+  batchUrls.disabled = false;
+
+  successCount.textContent = success;
+
+  if (failed.length > 0) {
+    failedSection.classList.remove('hidden');
+    failedCount.textContent = failed.length;
+    failedUrls.innerHTML = failed.map(f => `<div>${f.url}<br><span style="color: #999;">Error: ${f.error}</span></div>`).join('<br>');
+  }
+
+  batchResults.classList.remove('hidden');
+  showStatus('warning', `⏹️ Batch stopped. ${success} posts completed.`);
+}
 
 // Note: init() is called from unlockExtension() after password verification
