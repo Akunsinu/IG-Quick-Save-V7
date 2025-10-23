@@ -71,16 +71,20 @@
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'extractPostData') {
       window.postMessage({ type: 'EXTRACT_POST_DATA' }, '*');
+      return false; // No async response needed
     } else if (request.action === 'extractComments') {
       window.postMessage({ type: 'EXTRACT_COMMENTS' }, '*');
+      return false; // No async response needed
     } else if (request.action === 'extractMedia') {
       window.postMessage({ type: 'EXTRACT_MEDIA' }, '*');
+      return false; // No async response needed
     } else if (request.action === 'getPageInfo') {
       // Return basic page information
       sendResponse({
         url: window.location.href,
         isPostPage: /\/(p|reel)\/[^\/]+/.test(window.location.href)
       });
+      return false; // Sync response
     } else if (request.action === 'fetchAvatars') {
       // Fetch multiple avatar URLs and convert to base64
       const urls = request.urls || [];
@@ -164,7 +168,6 @@
 
       return true; // Keep channel open for async response
     }
-    return true; // Keep channel open for async response
   });
 
 })();
