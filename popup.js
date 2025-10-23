@@ -240,9 +240,10 @@ downloadMediaBtn.addEventListener('click', async () => {
   setTimeout(() => setButtonLoading(downloadMediaBtn, false), 2000);
 });
 
-// Helper function to build custom folder name: username_YYYY-MM-DD_shortcode
+// Helper function to build custom folder name: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode
 function buildFolderName(postInfo) {
-  const username = postInfo.username || 'unknown';
+  const username = (postInfo.username || 'unknown').toUpperCase();
+  const postType = (postInfo.post_type || 'post').toUpperCase();
   const shortcode = postInfo.shortcode || currentShortcode || 'post';
 
   // Format date as YYYY-MM-DD
@@ -255,26 +256,20 @@ function buildFolderName(postInfo) {
     dateStr = `${year}-${month}-${day}`;
   }
 
-  return `${username}_${dateStr}_${shortcode}`;
+  return `${username}_${postType}_${dateStr}_${shortcode}`;
 }
 
-// Build custom filename: username_YYYY-MM-DD_shortcode_comments.ext
+// Helper function to build base filename prefix
+function buildFilePrefix(postInfo) {
+  return buildFolderName(postInfo);
+}
+
+// Build custom filename: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode_comments.ext
 function buildCommentsFilename(postInfo, extension) {
   const folderName = buildFolderName(postInfo);
-  const username = postInfo.username || 'unknown';
-  const shortcode = postInfo.shortcode || currentShortcode || 'post';
+  const filePrefix = buildFilePrefix(postInfo);
 
-  // Format date as YYYY-MM-DD
-  let dateStr = 'unknown-date';
-  if (postInfo.posted_at) {
-    const date = new Date(postInfo.posted_at);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    dateStr = `${year}-${month}-${day}`;
-  }
-
-  return `Instagram/${folderName}/comments/${username}_${dateStr}_${shortcode}_comments.${extension}`;
+  return `Instagram/${folderName}/comments/${filePrefix}_comments.${extension}`;
 }
 
 // Download comments only (JSON)
@@ -341,19 +336,9 @@ downloadHtmlBtn.addEventListener('click', async () => {
 
   const postInfo = extractedData.comments?.post_info || extractedData.media?.post_info || {};
   const folderName = buildFolderName(postInfo);
-  const username = postInfo.username || 'unknown';
-  const shortcode = postInfo.shortcode || currentShortcode || 'post';
+  const filePrefix = buildFilePrefix(postInfo);
 
-  let dateStr = 'unknown-date';
-  if (postInfo.posted_at) {
-    const date = new Date(postInfo.posted_at);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    dateStr = `${year}-${month}-${day}`;
-  }
-
-  const filename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_archive.html`;
+  const filename = `Instagram/${folderName}/${filePrefix}_archive.html`;
   const saveAs = askWhereToSaveCheckbox?.checked || false;
 
   port.postMessage({
@@ -381,19 +366,9 @@ downloadScreenshotBtn.addEventListener('click', async () => {
   // Build screenshot filename
   const postInfo = extractedData.comments?.post_info || extractedData.media?.post_info || {};
   const folderName = buildFolderName(postInfo);
-  const username = postInfo.username || 'unknown';
-  const shortcode = postInfo.shortcode || currentShortcode || 'post';
+  const filePrefix = buildFilePrefix(postInfo);
 
-  let dateStr = 'unknown-date';
-  if (postInfo.posted_at) {
-    const date = new Date(postInfo.posted_at);
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    dateStr = `${year}-${month}-${day}`;
-  }
-
-  const filename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_screenshot.png`;
+  const filename = `Instagram/${folderName}/${filePrefix}_screenshot.png`;
   const saveAs = askWhereToSaveCheckbox?.checked || false;
 
   port.postMessage({

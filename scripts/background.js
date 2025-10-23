@@ -105,9 +105,10 @@ async function downloadFile(url, filename, saveAs = false) {
   });
 }
 
-// Helper function to build custom folder name: username_YYYY-MM-DD_shortcode
+// Helper function to build custom folder name: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode
 function buildFolderName(postInfo) {
-  const username = postInfo.username || 'unknown';
+  const username = (postInfo.username || 'unknown').toUpperCase();
+  const postType = (postInfo.post_type || 'post').toUpperCase();
   const shortcode = postInfo.shortcode || 'post';
 
   // Format date as YYYY-MM-DD
@@ -120,7 +121,12 @@ function buildFolderName(postInfo) {
     dateStr = `${year}-${month}-${day}`;
   }
 
-  return `${username}_${dateStr}_${shortcode}`;
+  return `${username}_${postType}_${dateStr}_${shortcode}`;
+}
+
+// Helper function to build base filename prefix: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode
+function buildFilePrefix(postInfo) {
+  return buildFolderName(postInfo);
 }
 
 // Helper function to download data as JSON
@@ -508,25 +514,16 @@ chrome.runtime.onConnect.addListener((port) => {
           const folderName = buildFolderName(postInfo);
           const folderPrefix = `Instagram/${folderName}/media`;
 
-          // Build base filename
-          const username = postInfo.username || 'unknown';
-          const shortcode = postInfo.shortcode || 'post';
-          let dateStr = 'unknown-date';
-          if (postInfo.posted_at) {
-            const date = new Date(postInfo.posted_at);
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            dateStr = `${year}-${month}-${day}`;
-          }
+          // Build base filename prefix
+          const filePrefix = buildFilePrefix(postInfo);
 
           for (let i = 0; i < media.length; i++) {
             const item = media[i];
             const url = item.video_url || item.image_url;
             const extension = item.video_url ? 'mp4' : 'jpg';
 
-            // Custom filename: username_YYYY-MM-DD_shortcode_media_1.jpg
-            const filename = `${folderPrefix}/${username}_${dateStr}_${shortcode}_media_${i + 1}.${extension}`;
+            // Custom filename: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode_media_1.jpg
+            const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
 
             try {
               // Only prompt saveAs for the first file
@@ -564,17 +561,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Build file prefix for relative media paths
           const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
-          const username = postInfo.username || 'unknown';
-          const shortcode = postInfo.shortcode || 'post';
-          let dateStr = 'unknown-date';
-          if (postInfo.posted_at) {
-            const date = new Date(postInfo.posted_at);
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            dateStr = `${year}-${month}-${day}`;
-          }
-          const mediaFilePrefix = `${username}_${dateStr}_${shortcode}`;
+          const mediaFilePrefix = buildFilePrefix(postInfo);
 
           const htmlContent = await generatePostHTML(currentData, mediaFilePrefix);
           await downloadHTML(htmlContent, filename, saveAs);
@@ -619,17 +606,7 @@ chrome.runtime.onConnect.addListener((port) => {
           // Get post info from either media or comments data
           const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
           const folderName = buildFolderName(postInfo);
-
-          const username = postInfo.username || 'unknown';
-          const shortcode = postInfo.shortcode || 'post';
-          let dateStr = 'unknown-date';
-          if (postInfo.posted_at) {
-            const date = new Date(postInfo.posted_at);
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            dateStr = `${year}-${month}-${day}`;
-          }
+          const filePrefix = buildFilePrefix(postInfo);
 
           // Download media
           if (currentData.media && currentData.media.media) {
@@ -638,7 +615,7 @@ chrome.runtime.onConnect.addListener((port) => {
               const item = currentData.media.media[i];
               const url = item.video_url || item.image_url;
               const extension = item.video_url ? 'mp4' : 'jpg';
-              const filename = `${folderPrefix}/${username}_${dateStr}_${shortcode}_media_${i + 1}.${extension}`;
+              const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
               // Only prompt saveAs for the first file
               await downloadFile(url, filename, saveAs && i === 0);
             }
@@ -646,7 +623,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Download comments as JSON
           if (currentData.comments && currentData.comments.comments) {
-            const filename = `Instagram/${folderName}/comments/${username}_${dateStr}_${shortcode}_comments.json`;
+            const filename = `Instagram/${folderName}/comments/${filePrefix}_comments.json`;
             await downloadJSON(currentData.comments, filename, false);
           }
 
@@ -657,13 +634,12 @@ chrome.runtime.onConnect.addListener((port) => {
             media_count: currentData.media?.media?.length || 0,
             comment_count: currentData.comments?.total || 0
           };
-          const metadataFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_metadata.json`;
+          const metadataFilename = `Instagram/${folderName}/${filePrefix}_metadata.json`;
           await downloadJSON(metadata, metadataFilename, false);
 
           // Download HTML archive
-          const mediaFilePrefix = `${username}_${dateStr}_${shortcode}`;
-          const htmlContent = await generatePostHTML(currentData, mediaFilePrefix);
-          const htmlFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_archive.html`;
+          const htmlContent = await generatePostHTML(currentData, filePrefix);
+          const htmlFilename = `Instagram/${folderName}/${filePrefix}_archive.html`;
           await downloadHTML(htmlContent, htmlFilename, false);
 
           // Capture screenshot
@@ -678,7 +654,7 @@ chrome.runtime.onConnect.addListener((port) => {
                 // Crop the screenshot (remove 15% from left, 10% from bottom)
                 const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
 
-                const screenshotFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_screenshot.png`;
+                const screenshotFilename = `Instagram/${folderName}/${filePrefix}_screenshot.png`;
                 await downloadFile(croppedDataUrl, screenshotFilename, false);
 
                 port.postMessage({
@@ -834,17 +810,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       if (currentData.media || currentData.comments) {
         const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
         const folderName = buildFolderName(postInfo);
-        const username = postInfo.username || 'unknown';
-        const shortcode = postInfo.shortcode || 'post';
-
-        let dateStr = 'unknown-date';
-        if (postInfo.posted_at) {
-          const date = new Date(postInfo.posted_at);
-          const year = date.getFullYear();
-          const month = String(date.getMonth() + 1).padStart(2, '0');
-          const day = String(date.getDate()).padStart(2, '0');
-          dateStr = `${year}-${month}-${day}`;
-        }
+        const filePrefix = buildFilePrefix(postInfo);
 
         // Download media
         if (currentData.media && currentData.media.media) {
@@ -853,14 +819,14 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             const item = currentData.media.media[i];
             const url = item.video_url || item.image_url;
             const extension = item.video_url ? 'mp4' : 'jpg';
-            const filename = `${folderPrefix}/${username}_${dateStr}_${shortcode}_media_${i + 1}.${extension}`;
+            const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
             await downloadFile(url, filename, false);
           }
         }
 
         // Download comments
         if (currentData.comments && currentData.comments.comments) {
-          const filename = `Instagram/${folderName}/comments/${username}_${dateStr}_${shortcode}_comments.json`;
+          const filename = `Instagram/${folderName}/comments/${filePrefix}_comments.json`;
           await downloadJSON(currentData.comments, filename, false);
         }
 
@@ -871,13 +837,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           media_count: currentData.media?.media?.length || 0,
           comment_count: currentData.comments?.total || 0
         };
-        const metadataFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_metadata.json`;
+        const metadataFilename = `Instagram/${folderName}/${filePrefix}_metadata.json`;
         await downloadJSON(metadata, metadataFilename, false);
 
         // Download HTML archive
-        const mediaFilePrefix = `${username}_${dateStr}_${shortcode}`;
-        const htmlContent = await generatePostHTML(currentData, mediaFilePrefix);
-        const htmlFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_archive.html`;
+        const htmlContent = await generatePostHTML(currentData, filePrefix);
+        const htmlFilename = `Instagram/${folderName}/${filePrefix}_archive.html`;
         await downloadHTML(htmlContent, htmlFilename, false);
 
         // Capture screenshot
@@ -887,7 +852,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             quality: 100
           });
           const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
-          const screenshotFilename = `Instagram/${folderName}/${username}_${dateStr}_${shortcode}_screenshot.png`;
+          const screenshotFilename = `Instagram/${folderName}/${filePrefix}_screenshot.png`;
           await downloadFile(croppedDataUrl, screenshotFilename, false);
         } catch (error) {
           console.error('[Background] Screenshot failed:', error);
