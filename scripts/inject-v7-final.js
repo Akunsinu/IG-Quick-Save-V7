@@ -149,8 +149,8 @@
         // Check if there are more replies to fetch
         if (data.has_more_tail_child_comments && data.next_min_id) {
           minId = data.next_min_id;
-          // Random delay between 500-800ms to avoid rate limiting
-          const delay = 500 + Math.floor(Math.random() * 300);
+          // Random delay between 400-600ms to avoid rate limiting
+          const delay = 400 + Math.floor(Math.random() * 200);
           await new Promise(resolve => setTimeout(resolve, delay));
         } else {
           hasMore = false;
@@ -199,13 +199,16 @@
         });
 
         if (!response.ok) {
+          console.error('[IG DL v7] ❌ HTTP Error:', response.status, response.statusText);
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
         const data = await response.json();
+        console.log('[IG DL v7] Response data:', data);
 
         if (!data.comments || !Array.isArray(data.comments)) {
-          console.warn('[IG DL v7] No comments array in response');
+          console.warn('[IG DL v7] ⚠️ No comments array in response. Data structure:', Object.keys(data));
+          console.warn('[IG DL v7] Full response:', data);
           break;
         }
 
@@ -232,8 +235,8 @@
         if (data.has_more_comments && data.next_max_id) {
           maxId = data.next_max_id;
           console.log('[IG DL v7] More comments available, next_max_id:', maxId);
-          // Random delay between 1000-1500ms to avoid rate limiting
-          const delay = 1000 + Math.floor(Math.random() * 500);
+          // Random delay between 600-1000ms to avoid rate limiting
+          const delay = 600 + Math.floor(Math.random() * 400);
           console.log('[IG DL v7] Waiting', delay, 'ms before next request...');
           await new Promise(resolve => setTimeout(resolve, delay));
         } else {
@@ -260,8 +263,8 @@
 
           console.log(`[IG DL v7] ✅ Got ${replies.length} replies`);
 
-          // Random delay between 800-1200ms to avoid rate limiting
-          const delay = 800 + Math.floor(Math.random() * 400);
+          // Random delay between 400-700ms to avoid rate limiting
+          const delay = 400 + Math.floor(Math.random() * 300);
           console.log(`[IG DL v7] Waiting ${delay}ms before fetching next comment's replies...`);
           await new Promise(resolve => setTimeout(resolve, delay));
         }
@@ -326,14 +329,19 @@
       };
 
     } catch (error) {
-      console.error('[IG DL v7] Error extracting comments:', error);
+      console.error('[IG DL v7] ❌ Error extracting comments:', error);
+      console.error('[IG DL v7] Error stack:', error.stack);
 
       // If API fails, show helpful error
       return {
         total: 0,
         comments: [],
         error: 'Could not fetch comments: ' + error.message,
-        note: 'Please make sure you are logged into Instagram and have access to view comments on this post.'
+        note: 'Please make sure you are logged into Instagram and have access to view comments on this post.',
+        debug: {
+          errorMessage: error.message,
+          errorStack: error.stack
+        }
       };
     }
   }
