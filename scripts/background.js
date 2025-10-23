@@ -807,8 +807,34 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       await chrome.tabs.sendMessage(tabId, { action: 'extractMedia' });
       await chrome.tabs.sendMessage(tabId, { action: 'extractComments' });
 
-      // Wait for extractions to complete
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Wait for extractions to complete (poll for data instead of fixed timeout)
+      console.log('[Background] Waiting for extraction to complete...');
+      const maxWaitTime = 60000; // 60 seconds max
+      const pollInterval = 1000; // Check every second
+      let waited = 0;
+
+      while (waited < maxWaitTime) {
+        // Check if both media and comments data are ready (comments can be empty array)
+        const mediaReady = currentData.media && currentData.media.media;
+        const commentsReady = currentData.comments && Array.isArray(currentData.comments.comments);
+
+        if (mediaReady && commentsReady) {
+          const commentCount = currentData.comments.comments.length;
+          console.log('[Background] ✅ Extraction complete! Found', commentCount, 'comments');
+          break;
+        }
+
+        if (mediaReady && !commentsReady) {
+          console.log('[Background] Waiting for comments... (', waited/1000, 's elapsed)');
+        }
+
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        waited += pollInterval;
+      }
+
+      if (waited >= maxWaitTime) {
+        console.warn('[Background] ⚠️ Timeout waiting for extraction. Proceeding with available data...');
+      }
 
       // Trigger download all
       if (currentData.media || currentData.comments) {
