@@ -243,7 +243,7 @@
     <div style="text-align: center; margin-bottom: 24px;">
       <div style="font-size: 48px; margin-bottom: 12px;">🔒</div>
       <h2>Protected Extension</h2>
-      <p>Enter password to access Instagram Downloader</p>
+      <p>Enter password to access IG Quick Save V6.71 Beta</p>
     </div>
 
     <div class="password-input-group">
@@ -259,8 +259,8 @@
   <!-- Main Content (hidden until unlocked) -->
   <div id="mainContent">
     <div class="header">
-      <h1>📸 Instagram Downloader</h1>
-      <p>Download media & comments from posts</p>
+      <h1>📸 IG Quick Save V6.71 Beta</h1>
+      <p>Download media & comments from posts and profiles</p>
     </div>
 
   <div id="status" class="status info">
@@ -322,6 +322,75 @@
       </div>
     </div>
 
+    <!-- Profile Scraper Section -->
+    <div id="profileSection" class="profile-section" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #dbdbdb;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <h3 style="font-size: 13px; font-weight: 600; color: #8e8e8e; margin: 0;">👤 Profile Download</h3>
+        <button id="toggleProfileBtn" class="secondary" style="padding: 4px 8px; font-size: 11px;">
+          Show
+        </button>
+      </div>
+
+      <div id="profileContent" class="hidden">
+        <div id="profileNotOnProfile" style="padding: 12px; background: #fff3e0; border-radius: 8px; margin-bottom: 12px; font-size: 12px; color: #f57c00;">
+          ⚠️ Go to an Instagram profile page to use this feature
+        </div>
+
+        <div id="profileOnProfile" class="hidden">
+          <div style="margin-bottom: 12px; padding: 12px; background: #e8f5e9; border-radius: 8px;">
+            <div style="font-size: 12px; color: #2e7d32; font-weight: 600;">
+              ✅ On profile: <span id="profileUsername">@username</span>
+            </div>
+          </div>
+
+          <div style="margin-bottom: 12px;">
+            <label style="font-size: 12px; color: #8e8e8e; margin-bottom: 4px; display: block;">
+              Number of posts to download:
+            </label>
+            <select id="profilePostCount" style="width: 100%; padding: 8px; border: 1px solid #dbdbdb; border-radius: 4px; font-size: 12px;">
+              <option value="10">10 posts</option>
+              <option value="25" selected>25 posts</option>
+              <option value="50">50 posts</option>
+              <option value="100">100 posts</option>
+              <option value="0">All posts (may take a while)</option>
+            </select>
+          </div>
+
+          <div class="button-group" style="margin-bottom: 12px;">
+            <button id="startProfileScrapeBtn" class="primary">
+              🔍 Collect Posts
+            </button>
+            <button id="stopProfileScrapeBtn" class="secondary" disabled>
+              ⏹️ Stop
+            </button>
+          </div>
+
+          <div id="profileScrapeProgress" class="hidden" style="margin-bottom: 12px; padding: 12px; background: #e3f2fd; border-radius: 8px;">
+            <div style="font-size: 12px; font-weight: 600; margin-bottom: 8px; color: #1976d2;">
+              <span id="profileScrapeStatus">Collecting posts...</span>
+            </div>
+            <div style="font-size: 11px; color: #1976d2; margin-bottom: 4px;">
+              Found: <span id="profileScrapeCount">0</span> posts
+            </div>
+            <div style="width: 100%; height: 6px; background: #bbdefb; border-radius: 3px; overflow: hidden;">
+              <div id="profileScrapeBar" style="width: 0%; height: 100%; background: #1976d2; transition: width 0.3s;"></div>
+            </div>
+          </div>
+
+          <div id="profileScrapeComplete" class="hidden" style="margin-bottom: 12px;">
+            <div style="padding: 12px; background: #e8f5e9; border-radius: 8px; margin-bottom: 8px;">
+              <div style="font-size: 12px; font-weight: 600; color: #2e7d32;">
+                ✅ Collected <span id="profileCollectedCount">0</span> posts from @<span id="profileCollectedUser">user</span>
+              </div>
+            </div>
+            <button id="downloadProfilePostsBtn" class="primary" style="width: 100%;">
+              ⬇️ Download All Posts
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Batch Download Section -->
     <div id="batchSection" class="batch-section" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #dbdbdb;">
       <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
@@ -343,6 +412,18 @@
           ></textarea>
           <div id="urlCount" style="font-size: 11px; color: #8e8e8e; margin-top: 4px;">
             0 URLs
+          </div>
+        </div>
+
+        <!-- Skip Downloaded Toggle -->
+        <div style="margin-bottom: 12px; padding: 10px; background: #f5f5f5; border-radius: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12px;">
+            <input type="checkbox" id="skipDownloadedToggle" checked style="width: 16px; height: 16px; cursor: pointer;">
+            <span>Skip already downloaded posts</span>
+          </label>
+          <div style="font-size: 11px; color: #8e8e8e; margin-top: 6px; margin-left: 24px;">
+            <span id="downloadHistoryCount">0</span> posts in download history
+            <button id="clearHistoryBtn" style="background: none; border: none; color: #0095f6; cursor: pointer; font-size: 11px; padding: 0; margin-left: 8px;">Clear</button>
           </div>
         </div>
 
@@ -384,10 +465,28 @@
         </div>
       </div>
     </div>
+
+    <!-- Open Viewer Button -->
+    <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #dbdbdb;">
+      <button id="openViewerBtn" class="secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;">
+        <span style="font-size: 16px;">📺</span> Open Archive Viewer
+      </button>
+    </div>
+
+    <!-- Version Info -->
+    <div style="text-align: center; margin-top: 12px;">
+      <div style="font-size: 10px; color: #8e8e8e;">
+        IG Quick Save V6.71 Beta
+      </div>
+      <div style="font-size: 9px; color: #c7c7c7; margin-top: 2px;">
+        Profile Scraping · Archive Viewer · Batch Download
+      </div>
+    </div>
   </div>
   </div>
   <!-- End Main Content -->
 
+  <script src="config.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

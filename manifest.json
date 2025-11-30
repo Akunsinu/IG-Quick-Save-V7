@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Instagram Post & Comments Downloader",
-  "version": "1.0.0",
-  "description": "Download media and comments from Instagram posts in one click",
+  "name": "IG Quick Save V6.71 Beta",
+  "version": "6.71.0",
+  "description": "Download media and comments from Instagram posts and profiles - with profile scraping and archive viewer",
   "permissions": [
     "activeTab",
     "downloads",
@@ -37,8 +37,12 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["scripts/inject-v7-final.js"],
+      "resources": ["scripts/inject-v7-final.js", "scripts/profile-scraper.js", "config.js"],
       "matches": ["https://www.instagram.com/*"]
+    },
+    {
+      "resources": ["viewer/instagram-viewer.html", "viewer/viewer.js", "viewer/html2canvas.min.js"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

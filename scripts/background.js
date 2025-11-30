@@ -1,9 +1,15 @@
 // Background service worker
+// Import config (service workers use importScripts)
+importScripts('../config.js');
+
 let currentData = {
   postData: null,
   comments: null,
   media: null
 };
+
+// Track connected popup ports for progress messages
+let activePopupPort = null;
 
 // Batch processing state
 let batchState = {
@@ -11,10 +17,71 @@ let batchState = {
   queue: [],
   currentIndex: 0,
   successCount: 0,
+  skippedCount: 0,
   failedUrls: [],
   tabId: null,
-  port: null
+  port: null,
+  skipDownloaded: true // Default to skipping already downloaded posts
 };
+
+// ===== Downloaded Posts Tracking =====
+
+// Get the set of downloaded shortcodes from storage
+async function getDownloadedShortcodes() {
+  try {
+    const result = await chrome.storage.local.get('downloadedShortcodes');
+    return new Set(result.downloadedShortcodes || []);
+  } catch (error) {
+    console.error('[Background] Error getting downloaded shortcodes:', error);
+    return new Set();
+  }
+}
+
+// Save a shortcode as downloaded
+async function markAsDownloaded(shortcode) {
+  try {
+    const downloaded = await getDownloadedShortcodes();
+    downloaded.add(shortcode);
+    // Convert Set to Array for storage (limit to last 10000 to prevent storage bloat)
+    const downloadedArray = Array.from(downloaded).slice(-10000);
+    await chrome.storage.local.set({ downloadedShortcodes: downloadedArray });
+    console.log('[Background] Marked as downloaded:', shortcode, '(total:', downloadedArray.length, ')');
+  } catch (error) {
+    console.error('[Background] Error saving downloaded shortcode:', error);
+  }
+}
+
+// Check if a shortcode has been downloaded
+async function isAlreadyDownloaded(shortcode) {
+  const downloaded = await getDownloadedShortcodes();
+  return downloaded.has(shortcode);
+}
+
+// Extract shortcode from Instagram URL
+function extractShortcode(url) {
+  const match = url.match(/instagram\.com\/(?:[^\/]+\/)?(p|reel|reels)\/([^\/\?\#]+)/);
+  return match ? match[2] : null;
+}
+
+// Get download history stats
+async function getDownloadStats() {
+  const downloaded = await getDownloadedShortcodes();
+  return {
+    totalDownloaded: downloaded.size
+  };
+}
+
+// Clear download history
+async function clearDownloadHistory() {
+  try {
+    await chrome.storage.local.set({ downloadedShortcodes: [] });
+    console.log('[Background] Download history cleared');
+    return true;
+  } catch (error) {
+    console.error('[Background] Error clearing download history:', error);
+    return false;
+  }
+}
 
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -26,6 +93,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     currentData.comments = message.data;
   } else if (message.type === 'MEDIA_RESPONSE') {
     currentData.media = message.data;
+  } else if (message.type === 'EXTRACTION_PROGRESS') {
+    // Forward progress messages to the connected popup
+    if (activePopupPort) {
+      activePopupPort.postMessage({
+        type: 'progress',
+        message: message.message
+      });
+    }
+  } else if (message.type === 'profileScrapeProgress') {
+    // Forward profile scrape progress to popup
+    console.log('[Background] Profile scrape progress received, activePopupPort:', !!activePopupPort);
+    if (activePopupPort) {
+      activePopupPort.postMessage({
+        type: 'profileScrapeProgress',
+        data: message.data
+      });
+    }
+  } else if (message.type === 'profileScrapeComplete') {
+    // Forward profile scrape complete to popup
+    console.log('[Background] Profile scrape COMPLETE received, activePopupPort:', !!activePopupPort, 'posts:', message.data?.count);
+    if (activePopupPort) {
+      activePopupPort.postMessage({
+        type: 'profileScrapeComplete',
+        data: message.data
+      });
+      console.log('[Background] Forwarded profileScrapeComplete to popup');
+    } else {
+      console.warn('[Background] No activePopupPort to forward profileScrapeComplete!');
+    }
   }
 
   return true;
@@ -105,7 +201,7 @@ async function downloadFile(url, filename, saveAs = false) {
   });
 }
 
-// Helper function to build custom folder name: username_POSTTYPE_YYYYMMDD_shortcode
+// Helper function to build custom folder name: username_IG_POSTTYPE_YYYYMMDD_shortcode
 function buildFolderName(postInfo) {
   const username = postInfo.username || 'unknown';
   const postType = (postInfo.post_type || 'post').toUpperCase();
@@ -121,10 +217,10 @@ function buildFolderName(postInfo) {
     dateStr = `${year}${month}${day}`;
   }
 
-  return `${username}_${postType}_${dateStr}_${shortcode}`;
+  return `${username}_IG_${postType}_${dateStr}_${shortcode}`;
 }
 
-// Helper function to build base filename prefix: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode
+// Helper function to build base filename prefix: username_IG_POSTTYPE_YYYYMMDD_shortcode
 function buildFilePrefix(postInfo) {
   return buildFolderName(postInfo);
 }
@@ -212,6 +308,30 @@ function escapeHTML(text) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+// Helper function to get file extension from URL
+function getFileExtension(url, isVideo = false) {
+  if (isVideo) return 'mp4';
+
+  // Try to extract extension from URL
+  try {
+    const urlObj = new URL(url);
+    const pathname = urlObj.pathname;
+    const match = pathname.match(/\.([a-z0-9]+)(?:\?|$)/i);
+    if (match && match[1]) {
+      const ext = match[1].toLowerCase();
+      // Common image extensions
+      if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) {
+        return ext;
+      }
+    }
+  } catch (e) {
+    // Fallback
+  }
+
+  // Default fallback
+  return 'jpg';
 }
 
 // Helper function to fetch avatars via content script
@@ -351,8 +471,9 @@ async function generatePostHTML(postData, mediaFilePrefix = null) {
   // Helper to get media path (use relative paths instead of base64)
   const getMedia = (item, index) => {
     if (mediaFilePrefix) {
-      // Use relative file path
-      const extension = item.video_url ? 'mp4' : 'jpg';
+      // Use relative file path with correct extension
+      const url = item.video_url || item.image_url;
+      const extension = getFileExtension(url, !!item.video_url);
       return `./media/${mediaFilePrefix}_media_${index + 1}.${extension}`;
     } else {
       // Fallback to original URL
@@ -500,6 +621,16 @@ function downloadHTML(htmlContent, filename, saveAs = false) {
 // Expose API for popup
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'popup') {
+    // Store the active popup port for progress messages
+    activePopupPort = port;
+    console.log('[Background] Popup connected, progress messages enabled');
+
+    // Clear the port reference when popup disconnects
+    port.onDisconnect.addListener(() => {
+      activePopupPort = null;
+      console.log('[Background] Popup disconnected, progress messages disabled');
+    });
+
     port.onMessage.addListener(async (msg) => {
       try {
         if (msg.action === 'getCurrentData') {
@@ -510,20 +641,37 @@ chrome.runtime.onConnect.addListener((port) => {
         } else if (msg.action === 'downloadMedia') {
           const { media, postInfo, saveAs } = msg.data;
 
-          // Build custom folder name
+          // Build custom folder name with username parent folder
+          const username = postInfo.username || 'unknown';
           const folderName = buildFolderName(postInfo);
-          const folderPrefix = `Instagram/${folderName}/media`;
+          const folderPrefix = `Instagram/${username}/${folderName}/media`;
 
           // Build base filename prefix
           const filePrefix = buildFilePrefix(postInfo);
 
+          // Send progress message
+          if (activePopupPort) {
+            activePopupPort.postMessage({
+              type: 'progress',
+              message: `⬇️ Downloading ${media.length} media files...`
+            });
+          }
+
           for (let i = 0; i < media.length; i++) {
             const item = media[i];
             const url = item.video_url || item.image_url;
-            const extension = item.video_url ? 'mp4' : 'jpg';
+            const extension = getFileExtension(url, !!item.video_url);
 
-            // Custom filename: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode_media_1.jpg
+            // Custom filename: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode_media_1.ext
             const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
+
+            // Send progress for each file
+            if (activePopupPort) {
+              activePopupPort.postMessage({
+                type: 'progress',
+                message: `⬇️ Downloading media ${i + 1}/${media.length}...`
+              });
+            }
 
             try {
               // Only prompt saveAs for the first file
@@ -577,14 +725,30 @@ chrome.runtime.onConnect.addListener((port) => {
           chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
             if (tabs[0]) {
               try {
+                const tabId = tabs[0].id;
+
+                // Step 1: Hide avatar before screenshot
+                console.log('[Background] Hiding avatar for screenshot...');
+                await chrome.tabs.sendMessage(tabId, { action: 'hideAvatar' });
+
+                // Step 2: Wait for CSS to apply
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                // Step 3: Capture screenshot
+                console.log('[Background] Capturing screenshot...');
                 const dataUrl = await chrome.tabs.captureVisibleTab(null, {
                   format: 'png',
                   quality: 100
                 });
 
-                // Crop the screenshot (remove 15% from left, 10% from bottom)
+                // Step 4: Restore avatar immediately
+                console.log('[Background] Restoring avatar...');
+                chrome.tabs.sendMessage(tabId, { action: 'restoreAvatar' });
+
+                // Step 5: Crop the screenshot (remove 15% from left, 10% from bottom)
                 const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
 
+                // Step 6: Download
                 await downloadFile(croppedDataUrl, filename, saveAs);
 
                 port.postMessage({
@@ -593,6 +757,18 @@ chrome.runtime.onConnect.addListener((port) => {
                 });
               } catch (error) {
                 console.error('[Background] Screenshot error:', error);
+
+                // Try to restore avatar even if screenshot failed
+                try {
+                  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                    if (tabs[0]) {
+                      chrome.tabs.sendMessage(tabs[0].id, { action: 'restoreAvatar' });
+                    }
+                  });
+                } catch (e) {
+                  console.error('[Background] Failed to restore avatar:', e);
+                }
+
                 port.postMessage({
                   type: 'error',
                   message: 'Failed to capture screenshot: ' + error.message
@@ -605,17 +781,43 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Get post info from either media or comments data
           const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
+          const username = postInfo.username || 'unknown';
           const folderName = buildFolderName(postInfo);
           const filePrefix = buildFilePrefix(postInfo);
 
+          // Send initial progress
+          if (activePopupPort) {
+            activePopupPort.postMessage({
+              type: 'progress',
+              message: '📦 Starting complete download...'
+            });
+          }
+
           // Download media
           if (currentData.media && currentData.media.media) {
-            const folderPrefix = `Instagram/${folderName}/media`;
-            for (let i = 0; i < currentData.media.media.length; i++) {
+            const folderPrefix = `Instagram/${username}/${folderName}/media`;
+            const mediaCount = currentData.media.media.length;
+
+            if (activePopupPort) {
+              activePopupPort.postMessage({
+                type: 'progress',
+                message: `⬇️ Downloading ${mediaCount} media files...`
+              });
+            }
+
+            for (let i = 0; i < mediaCount; i++) {
               const item = currentData.media.media[i];
               const url = item.video_url || item.image_url;
-              const extension = item.video_url ? 'mp4' : 'jpg';
+              const extension = getFileExtension(url, !!item.video_url);
               const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
+
+              if (activePopupPort) {
+                activePopupPort.postMessage({
+                  type: 'progress',
+                  message: `⬇️ Downloading media ${i + 1}/${mediaCount}...`
+                });
+              }
+
               // Only prompt saveAs for the first file
               await downloadFile(url, filename, saveAs && i === 0);
             }
@@ -623,43 +825,92 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Download comments as JSON and CSV
           if (currentData.comments && currentData.comments.comments) {
-            const jsonFilename = `Instagram/${folderName}/comments/${filePrefix}_comments.json`;
+            if (activePopupPort) {
+              activePopupPort.postMessage({
+                type: 'progress',
+                message: '💾 Saving comments as JSON and CSV...'
+              });
+            }
+
+            const jsonFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.json`;
             await downloadJSON(currentData.comments, jsonFilename, false);
 
-            const csv = commentsToCSV(currentData.comments.comments);
-            const csvFilename = `Instagram/${folderName}/comments/${filePrefix}_comments.csv`;
+            // Pass full currentData.comments object (includes post_info and comments)
+            const csv = commentsToCSV(currentData.comments);
+            const csvFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.csv`;
             await downloadCSV(csv, csvFilename, false);
           }
 
           // Download post metadata
+          if (activePopupPort) {
+            activePopupPort.postMessage({
+              type: 'progress',
+              message: '📝 Saving post metadata...'
+            });
+          }
+
           const metadata = {
             ...postInfo,
             downloaded_at: new Date().toISOString(),
             media_count: currentData.media?.media?.length || 0,
             comment_count: currentData.comments?.total || 0
           };
-          const metadataFilename = `Instagram/${folderName}/${filePrefix}_metadata.json`;
+          const metadataFilename = `Instagram/${username}/${folderName}/${filePrefix}_metadata.json`;
           await downloadJSON(metadata, metadataFilename, false);
 
           // Download HTML archive
+          if (activePopupPort) {
+            activePopupPort.postMessage({
+              type: 'progress',
+              message: '🌐 Generating HTML archive...'
+            });
+          }
+
           const htmlContent = await generatePostHTML(currentData, filePrefix);
-          const htmlFilename = `Instagram/${folderName}/${filePrefix}_archive.html`;
+          const htmlFilename = `Instagram/${username}/${folderName}/${filePrefix}_archive.html`;
           await downloadHTML(htmlContent, htmlFilename, false);
 
           // Capture screenshot
           chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
             if (tabs[0]) {
               try {
+                const tabId = tabs[0].id;
+
+                if (activePopupPort) {
+                  activePopupPort.postMessage({
+                    type: 'progress',
+                    message: '📸 Capturing screenshot...'
+                  });
+                }
+
+                // Hide avatar before screenshot
+                console.log('[Background] Hiding avatar for screenshot...');
+                await chrome.tabs.sendMessage(tabId, { action: 'hideAvatar' });
+
+                // Wait for CSS to apply
+                await new Promise(resolve => setTimeout(resolve, 100));
+
+                // Capture screenshot
                 const dataUrl = await chrome.tabs.captureVisibleTab(null, {
                   format: 'png',
                   quality: 100
                 });
 
+                // Restore avatar immediately
+                console.log('[Background] Restoring avatar...');
+                chrome.tabs.sendMessage(tabId, { action: 'restoreAvatar' });
+
                 // Crop the screenshot (remove 15% from left, 10% from bottom)
                 const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
 
-                const screenshotFilename = `Instagram/${folderName}/${filePrefix}_screenshot.png`;
+                const screenshotFilename = `Instagram/${username}/${folderName}/${filePrefix}_screenshot.png`;
                 await downloadFile(croppedDataUrl, screenshotFilename, false);
+
+                // Mark as downloaded
+                const shortcode = postInfo.shortcode;
+                if (shortcode) {
+                  await markAsDownloaded(shortcode);
+                }
 
                 port.postMessage({
                   type: 'success',
@@ -667,12 +918,36 @@ chrome.runtime.onConnect.addListener((port) => {
                 });
               } catch (error) {
                 console.error('[Background] Screenshot error:', error);
+
+                // Try to restore avatar even if screenshot failed
+                try {
+                  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                    if (tabs[0]) {
+                      chrome.tabs.sendMessage(tabs[0].id, { action: 'restoreAvatar' });
+                    }
+                  });
+                } catch (e) {
+                  console.error('[Background] Failed to restore avatar:', e);
+                }
+
+                // Still mark as downloaded even if screenshot failed
+                const shortcode = postInfo.shortcode;
+                if (shortcode) {
+                  await markAsDownloaded(shortcode);
+                }
+
                 port.postMessage({
                   type: 'success',
                   message: 'Downloaded all content (screenshot failed)'
                 });
               }
             } else {
+              // Mark as downloaded
+              const shortcode = postInfo.shortcode;
+              if (shortcode) {
+                await markAsDownloaded(shortcode);
+              }
+
               port.postMessage({
                 type: 'success',
                 message: 'Downloaded all content successfully!'
@@ -681,20 +956,51 @@ chrome.runtime.onConnect.addListener((port) => {
           });
         } else if (msg.action === 'startBatch') {
           // Start batch processing
-          const { urls } = msg.data;
+          const { urls, skipDownloaded } = msg.data;
           batchState.queue = urls;
           batchState.currentIndex = 0;
           batchState.successCount = 0;
+          batchState.skippedCount = 0;
           batchState.failedUrls = [];
           batchState.isProcessing = true;
           batchState.port = port;
+          batchState.skipDownloaded = skipDownloaded !== false; // Default to true
 
           // Get current tab
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           batchState.tabId = tab.id;
 
-          console.log('[Background] Starting batch processing:', urls.length, 'URLs');
+          console.log('[Background] Starting batch processing:', urls.length, 'URLs, skipDownloaded:', batchState.skipDownloaded);
           processNextBatchUrl();
+
+        } else if (msg.action === 'getDownloadStats') {
+          // Get download history statistics
+          const stats = await getDownloadStats();
+          port.postMessage({
+            type: 'downloadStats',
+            data: stats
+          });
+
+        } else if (msg.action === 'clearDownloadHistory') {
+          // Clear download history
+          const success = await clearDownloadHistory();
+          port.postMessage({
+            type: 'downloadHistoryCleared',
+            data: { success }
+          });
+
+        } else if (msg.action === 'checkIfDownloaded') {
+          // Check if specific URLs are already downloaded
+          const { urls } = msg.data;
+          const results = {};
+          for (const url of urls) {
+            const shortcode = extractShortcode(url);
+            results[url] = shortcode ? await isAlreadyDownloaded(shortcode) : false;
+          }
+          port.postMessage({
+            type: 'downloadedCheckResult',
+            data: results
+          });
 
         } else if (msg.action === 'stopBatch') {
           // Stop batch processing
@@ -743,6 +1049,7 @@ async function processNextBatchUrl() {
         type: 'batchComplete',
         data: {
           successCount: batchState.successCount,
+          skippedCount: batchState.skippedCount,
           failedUrls: batchState.failedUrls,
           total: batchState.queue.length
         }
@@ -752,7 +1059,38 @@ async function processNextBatchUrl() {
   }
 
   const url = batchState.queue[batchState.currentIndex];
-  console.log('[Background] Processing URL', batchState.currentIndex + 1, '/', batchState.queue.length, ':', url);
+  const shortcode = extractShortcode(url);
+  console.log('[Background] Processing URL', batchState.currentIndex + 1, '/', batchState.queue.length, ':', url, 'shortcode:', shortcode);
+
+  // Check if already downloaded (if skip option is enabled)
+  if (batchState.skipDownloaded && shortcode) {
+    const alreadyDownloaded = await isAlreadyDownloaded(shortcode);
+    if (alreadyDownloaded) {
+      console.log('[Background] ⏭️ Skipping already downloaded:', shortcode);
+      batchState.skippedCount++;
+      batchState.currentIndex++;
+
+      // Send progress update
+      if (batchState.port) {
+        batchState.port.postMessage({
+          type: 'batchProgress',
+          data: {
+            current: batchState.currentIndex,
+            total: batchState.queue.length,
+            url: url,
+            successCount: batchState.successCount,
+            skippedCount: batchState.skippedCount,
+            failedUrls: batchState.failedUrls,
+            skipped: true
+          }
+        });
+      }
+
+      // Small delay before processing next
+      setTimeout(() => processNextBatchUrl(), 100);
+      return;
+    }
+  }
 
   // Send progress update to popup
   if (batchState.port) {
@@ -763,7 +1101,9 @@ async function processNextBatchUrl() {
         total: batchState.queue.length,
         url: url,
         successCount: batchState.successCount,
-        failedUrls: batchState.failedUrls
+        skippedCount: batchState.skippedCount,
+        failedUrls: batchState.failedUrls,
+        skipped: false
       }
     });
   }
@@ -777,8 +1117,9 @@ async function processNextBatchUrl() {
     batchState.failedUrls.push({ url, error: error.message });
     batchState.currentIndex++;
 
-    // Add delay before next URL
-    setTimeout(() => processNextBatchUrl(), 3000 + Math.random() * 2000);
+    // Add delay before next URL using CONFIG
+    const delay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
+    setTimeout(() => processNextBatchUrl(), delay);
   }
 }
 
@@ -789,28 +1130,32 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 
   // Check if page is fully loaded
-  if (changeInfo.status === 'complete' && tab.url && tab.url.includes('instagram.com/p/')) {
-    console.log('[Background] Page loaded, starting auto-extraction for batch processing');
+  if (changeInfo.status === 'complete' && tab.url) {
+    console.log('[Background] 🔄 Tab update detected:', tab.url);
 
-    // Reset current data
-    currentData = {
-      postData: null,
-      comments: null,
-      media: null
-    };
+    if (tab.url.includes('instagram.com/p/') || tab.url.includes('instagram.com/reel/')) {
+      console.log('[Background] ✅ Valid Instagram post/reel detected, starting auto-extraction');
 
-    // Wait a bit for page to fully render
-    await new Promise(resolve => setTimeout(resolve, 2000));
+      // Reset current data
+      currentData = {
+        postData: null,
+        comments: null,
+        media: null
+      };
 
-    try {
-      // Trigger extraction via content script
-      await chrome.tabs.sendMessage(tabId, { action: 'extractMedia' });
-      await chrome.tabs.sendMessage(tabId, { action: 'extractComments' });
+      // Wait a bit for page to fully render
+      await new Promise(resolve => setTimeout(resolve, 2000));
 
-      // Wait for extractions to complete (poll for data instead of fixed timeout)
+      try {
+        // Trigger extraction via content script
+        console.log('[Background] 📤 Sending extraction requests to content script...');
+        await chrome.tabs.sendMessage(tabId, { action: 'extractMedia' });
+        await chrome.tabs.sendMessage(tabId, { action: 'extractComments' });
+
+      // Wait for extractions to complete with exponential backoff polling
       console.log('[Background] Waiting for extraction to complete...');
-      const maxWaitTime = 60000; // 60 seconds max
-      const pollInterval = 1000; // Check every second
+      const maxWaitTime = CONFIG.TIMING.POLL_MAX_WAIT;
+      let pollInterval = CONFIG.TIMING.POLL_INTERVAL_START; // Start at 500ms
       let waited = 0;
 
       while (waited < maxWaitTime) {
@@ -820,16 +1165,22 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
         if (mediaReady && commentsReady) {
           const commentCount = currentData.comments.comments.length;
-          console.log('[Background] ✅ Extraction complete! Found', commentCount, 'comments');
+          console.log('[Background] ✅ Extraction complete! Found', commentCount, 'comments in', waited/1000, 's');
           break;
         }
 
         if (mediaReady && !commentsReady) {
-          console.log('[Background] Waiting for comments... (', waited/1000, 's elapsed)');
+          console.log('[Background] Waiting for comments... (', waited/1000, 's elapsed, next check in', pollInterval, 'ms)');
         }
 
         await new Promise(resolve => setTimeout(resolve, pollInterval));
         waited += pollInterval;
+
+        // Exponential backoff: increase interval up to max
+        pollInterval = Math.min(
+          pollInterval * CONFIG.TIMING.POLL_BACKOFF_MULTIPLIER,
+          CONFIG.TIMING.POLL_INTERVAL_MAX
+        );
       }
 
       if (waited >= maxWaitTime) {
@@ -839,16 +1190,17 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       // Trigger download all
       if (currentData.media || currentData.comments) {
         const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
+        const username = postInfo.username || 'unknown';
         const folderName = buildFolderName(postInfo);
         const filePrefix = buildFilePrefix(postInfo);
 
         // Download media
         if (currentData.media && currentData.media.media) {
-          const folderPrefix = `Instagram/${folderName}/media`;
+          const folderPrefix = `Instagram/${username}/${folderName}/media`;
           for (let i = 0; i < currentData.media.media.length; i++) {
             const item = currentData.media.media[i];
             const url = item.video_url || item.image_url;
-            const extension = item.video_url ? 'mp4' : 'jpg';
+            const extension = getFileExtension(url, !!item.video_url);
             const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
             await downloadFile(url, filename, false);
           }
@@ -856,11 +1208,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
         // Download comments as JSON and CSV
         if (currentData.comments && currentData.comments.comments) {
-          const jsonFilename = `Instagram/${folderName}/comments/${filePrefix}_comments.json`;
+          const jsonFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.json`;
           await downloadJSON(currentData.comments, jsonFilename, false);
 
-          const csv = commentsToCSV(currentData.comments.comments);
-          const csvFilename = `Instagram/${folderName}/comments/${filePrefix}_comments.csv`;
+          // Pass full currentData.comments object (includes post_info and comments)
+          const csv = commentsToCSV(currentData.comments);
+          const csvFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.csv`;
           await downloadCSV(csv, csvFilename, false);
         }
 
@@ -871,30 +1224,54 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           media_count: currentData.media?.media?.length || 0,
           comment_count: currentData.comments?.total || 0
         };
-        const metadataFilename = `Instagram/${folderName}/${filePrefix}_metadata.json`;
+        const metadataFilename = `Instagram/${username}/${folderName}/${filePrefix}_metadata.json`;
         await downloadJSON(metadata, metadataFilename, false);
 
         // Download HTML archive (wait a bit to ensure content script is ready for avatar fetching)
         await new Promise(resolve => setTimeout(resolve, 1000));
         const htmlContent = await generatePostHTML(currentData, filePrefix);
-        const htmlFilename = `Instagram/${folderName}/${filePrefix}_archive.html`;
+        const htmlFilename = `Instagram/${username}/${folderName}/${filePrefix}_archive.html`;
         await downloadHTML(htmlContent, htmlFilename, false);
 
         // Capture screenshot
         try {
+          // Hide avatar before screenshot
+          console.log('[Background] Hiding avatar for batch screenshot...');
+          await chrome.tabs.sendMessage(tab.id, { action: 'hideAvatar' });
+
+          // Wait for CSS to apply
+          await new Promise(resolve => setTimeout(resolve, 100));
+
           const dataUrl = await chrome.tabs.captureVisibleTab(null, {
             format: 'png',
             quality: 100
           });
+
+          // Restore avatar after capture
+          console.log('[Background] Restoring avatar after batch screenshot...');
+          chrome.tabs.sendMessage(tab.id, { action: 'restoreAvatar' });
+
           const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
-          const screenshotFilename = `Instagram/${folderName}/${filePrefix}_screenshot.png`;
+          const screenshotFilename = `Instagram/${username}/${folderName}/${filePrefix}_screenshot.png`;
           await downloadFile(croppedDataUrl, screenshotFilename, false);
         } catch (error) {
           console.error('[Background] Screenshot failed:', error);
+          // Try to restore avatar even if screenshot failed
+          try {
+            chrome.tabs.sendMessage(tab.id, { action: 'restoreAvatar' });
+          } catch (e) {
+            console.error('[Background] Failed to restore avatar:', e);
+          }
         }
 
         console.log('[Background] Successfully downloaded:', tab.url);
         batchState.successCount++;
+
+        // Mark this post as downloaded
+        const downloadedShortcode = extractShortcode(tab.url);
+        if (downloadedShortcode) {
+          await markAsDownloaded(downloadedShortcode);
+        }
       } else {
         throw new Error('Failed to extract data');
       }
@@ -903,10 +1280,14 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       batchState.failedUrls.push({ url: tab.url, error: error.message });
     }
 
-    // Move to next URL with delay
-    batchState.currentIndex++;
-    setTimeout(() => processNextBatchUrl(), 3000 + Math.random() * 2000);
+      // Move to next URL with delay using CONFIG
+      batchState.currentIndex++;
+      const delay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
+      setTimeout(() => processNextBatchUrl(), delay);
+    } else {
+      console.log('[Background] ⚠️ Not an Instagram post/reel URL, skipping');
+    }
   }
 });
 
-console.log('[Instagram Downloader] Background script loaded');
+console.log('[Instagram Downloader V2] 🚀 Background script loaded - Optimized version');
