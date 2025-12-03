@@ -1221,7 +1221,19 @@ if (detectPostCountBtn) {
           setTimeout(() => {
             profileTotalInput.style.backgroundColor = '';
           }, 2000);
-          showStatus('success', `Detected ${response.postCount} posts`);
+
+          // Auto-update Google Sheet with detected count
+          const username = completionUsername.textContent.replace('@', '');
+          if (port && username && username !== 'username') {
+            console.log('[Popup] Auto-updating profile total in Sheets:', username, response.postCount);
+            port.postMessage({
+              action: 'updateProfileTotal',
+              data: { username, totalPosts: response.postCount }
+            });
+            showStatus('success', `Detected ${response.postCount} posts and updated in Sheets`);
+          } else {
+            showStatus('success', `Detected ${response.postCount} posts`);
+          }
         } else {
           showStatus('warning', 'Could not detect post count. Please enter manually.');
         }
@@ -1276,6 +1288,15 @@ async function checkProfileCompletionForSync() {
               setTimeout(() => {
                 profileTotalInput.style.backgroundColor = '';
               }, 2000);
+
+              // Auto-update the Google Sheet with detected count
+              if (port && username) {
+                console.log('[Popup] Auto-updating profile total in Sheets:', username, response.postCount);
+                port.postMessage({
+                  action: 'updateProfileTotal',
+                  data: { username, totalPosts: response.postCount }
+                });
+              }
             }
           }
         });
