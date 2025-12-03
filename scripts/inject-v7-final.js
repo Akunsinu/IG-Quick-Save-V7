@@ -173,8 +173,23 @@
   function getCollaborators(post, primaryUsername) {
     const collaborators = [];
 
+    // DEBUG: Log all keys that might contain collaborator info
+    const collabKeys = Object.keys(post).filter(k =>
+      k.toLowerCase().includes('coauthor') ||
+      k.toLowerCase().includes('collab') ||
+      k.toLowerCase().includes('creator') ||
+      k.toLowerCase().includes('sponsor')
+    );
+    if (collabKeys.length > 0) {
+      console.log('[IG DL v7] 🔍 Potential collaborator fields found:', collabKeys);
+      collabKeys.forEach(key => {
+        console.log('[IG DL v7] 🔍', key, ':', JSON.stringify(post[key])?.substring(0, 200));
+      });
+    }
+
     // Check coauthor_producers (Instagram's collaboration feature)
     if (post.coauthor_producers && Array.isArray(post.coauthor_producers)) {
+      console.log('[IG DL v7] 👥 Found coauthor_producers:', post.coauthor_producers.length);
       for (const coauthor of post.coauthor_producers) {
         if (coauthor.username && coauthor.username !== primaryUsername) {
           collaborators.push(coauthor.username);
@@ -184,9 +199,33 @@
 
     // Also check invited_coauthor_producers (pending collaborations)
     if (post.invited_coauthor_producers && Array.isArray(post.invited_coauthor_producers)) {
+      console.log('[IG DL v7] 👥 Found invited_coauthor_producers:', post.invited_coauthor_producers.length);
       for (const coauthor of post.invited_coauthor_producers) {
         if (coauthor.username && coauthor.username !== primaryUsername && !collaborators.includes(coauthor.username)) {
           collaborators.push(coauthor.username);
+        }
+      }
+    }
+
+    // Check for sponsor_tags (branded content / paid partnerships)
+    if (post.sponsor_tags && Array.isArray(post.sponsor_tags)) {
+      console.log('[IG DL v7] 👥 Found sponsor_tags:', post.sponsor_tags.length);
+      for (const sponsor of post.sponsor_tags) {
+        const sponsorUsername = sponsor.sponsor?.username || sponsor.username;
+        if (sponsorUsername && sponsorUsername !== primaryUsername && !collaborators.includes(sponsorUsername)) {
+          collaborators.push(sponsorUsername);
+        }
+      }
+    }
+
+    // Check for usertags (tagged users in the post)
+    if (post.usertags && post.usertags.in && Array.isArray(post.usertags.in)) {
+      console.log('[IG DL v7] 👥 Found usertags:', post.usertags.in.length);
+      for (const tag of post.usertags.in) {
+        const taggedUsername = tag.user?.username;
+        if (taggedUsername && taggedUsername !== primaryUsername && !collaborators.includes(taggedUsername)) {
+          // Only add as collaborator if they appear in multiple places or it's a collab post
+          // For now, we'll skip usertags as they're different from true collaborators
         }
       }
     }
