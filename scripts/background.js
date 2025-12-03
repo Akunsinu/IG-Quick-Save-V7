@@ -1,6 +1,7 @@
 // Background service worker
-// Import config (service workers use importScripts)
+// Import config and modules (service workers use importScripts)
 importScripts('../config.js');
+importScripts('./sheets-sync.js');
 
 let currentData = {
   postData: null,
@@ -21,8 +22,66 @@ let batchState = {
   failedUrls: [],
   tabId: null,
   port: null,
-  skipDownloaded: true // Default to skipping already downloaded posts
+  skipDownloaded: true, // Default to skipping already downloaded posts
+  // Rate limiting tracking
+  consecutiveErrors: 0,
+  last429Time: null,
+  currentPauseDuration: 0,
+  isPaused: false
 };
+
+// ===== Batch State Persistence (for resume capability) =====
+
+// Save batch state to storage for resume capability
+async function saveBatchState() {
+  if (!batchState.isProcessing && batchState.queue.length === 0) {
+    // Clear saved state if batch is complete
+    await chrome.storage.local.remove('savedBatchState');
+    return;
+  }
+
+  const stateToSave = {
+    queue: batchState.queue,
+    currentIndex: batchState.currentIndex,
+    successCount: batchState.successCount,
+    skippedCount: batchState.skippedCount,
+    failedUrls: batchState.failedUrls,
+    skipDownloaded: batchState.skipDownloaded,
+    savedAt: Date.now(),
+    totalInBatch: batchState.queue.length
+  };
+
+  await chrome.storage.local.set({ savedBatchState: stateToSave });
+  console.log('[Background] Batch state saved for resume:', stateToSave.currentIndex, '/', stateToSave.totalInBatch);
+}
+
+// Load saved batch state
+async function loadSavedBatchState() {
+  try {
+    const result = await chrome.storage.local.get('savedBatchState');
+    if (result.savedBatchState) {
+      const state = result.savedBatchState;
+      // Check if state is less than 24 hours old
+      const ageHours = (Date.now() - state.savedAt) / (1000 * 60 * 60);
+      if (ageHours < 24) {
+        return state;
+      } else {
+        // State is too old, clear it
+        await chrome.storage.local.remove('savedBatchState');
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error('[Background] Error loading saved batch state:', error);
+    return null;
+  }
+}
+
+// Clear saved batch state
+async function clearSavedBatchState() {
+  await chrome.storage.local.remove('savedBatchState');
+  console.log('[Background] Saved batch state cleared');
+}
 
 // ===== Downloaded Posts Tracking =====
 
@@ -37,8 +96,8 @@ async function getDownloadedShortcodes() {
   }
 }
 
-// Save a shortcode as downloaded
-async function markAsDownloaded(shortcode) {
+// Save a shortcode as downloaded (local + optionally sync to Sheets)
+async function markAsDownloaded(shortcode, postInfo = null) {
   try {
     const downloaded = await getDownloadedShortcodes();
     downloaded.add(shortcode);
@@ -46,6 +105,12 @@ async function markAsDownloaded(shortcode) {
     const downloadedArray = Array.from(downloaded).slice(-10000);
     await chrome.storage.local.set({ downloadedShortcodes: downloadedArray });
     console.log('[Background] Marked as downloaded:', shortcode, '(total:', downloadedArray.length, ')');
+
+    // Sync to Google Sheets if enabled and postInfo provided
+    if (postInfo && typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+      const syncResult = await SheetsSync.trackDownload(postInfo);
+      console.log('[Background] Sheets sync result:', syncResult);
+    }
   } catch (error) {
     console.error('[Background] Error saving downloaded shortcode:', error);
   }
@@ -158,7 +223,7 @@ async function setupOffscreenDocument() {
   creatingOffscreen = null;
 }
 
-// Crop screenshot using offscreen document
+// Crop screenshot using offscreen document (legacy, kept for compatibility)
 async function cropScreenshot(dataUrl, cropLeftPercent = 15, cropBottomPercent = 10) {
   try {
     await setupOffscreenDocument();
@@ -181,6 +246,31 @@ async function cropScreenshot(dataUrl, cropLeftPercent = 15, cropBottomPercent =
     console.error('[Background] Error cropping screenshot:', error);
     // Return original if cropping fails
     return dataUrl;
+  }
+}
+
+// Render Instagram-style screenshot using offscreen document
+async function renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl) {
+  try {
+    await setupOffscreenDocument();
+
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({
+        type: 'RENDER_SCREENSHOT',
+        postData: postInfo,
+        mediaDataUrl: mediaDataUrl,
+        avatarDataUrl: avatarDataUrl
+      }, (response) => {
+        if (response && response.success) {
+          resolve(response.dataUrl);
+        } else {
+          reject(new Error(response?.error || 'Failed to render screenshot'));
+        }
+      });
+    });
+  } catch (error) {
+    console.error('[Background] Error rendering screenshot:', error);
+    throw error;
   }
 }
 
@@ -375,6 +465,53 @@ async function fetchAvatarsViaContentScript(urls) {
   } catch (error) {
     console.error('[Background] Error in fetchAvatarsViaContentScript:', error);
     return {};
+  }
+}
+
+// Helper function to fetch a single media item as base64 via content script
+async function fetchSingleMediaAsBase64(url, isVideo = false) {
+  if (!url) return null;
+
+  try {
+    // Get active tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) {
+      console.error('[Background] No active tab found for media fetch');
+      return null;
+    }
+
+    return new Promise((resolve, reject) => {
+      chrome.tabs.sendMessage(tab.id, {
+        action: isVideo ? 'captureVideoFrame' : 'fetchMedia',
+        mediaItems: [{ image_url: url }],
+        videoUrl: url
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('[Background] Error fetching media:', chrome.runtime.lastError.message);
+          resolve(null);
+        } else if (response && response.success) {
+          // For video frame capture
+          if (response.frameDataUrl) {
+            console.log('[Background] Got video frame, length:', response.frameDataUrl.length);
+            resolve(response.frameDataUrl);
+          }
+          // For regular media fetch
+          else if (response.mediaCache && response.mediaCache[url]) {
+            console.log('[Background] Got media, length:', response.mediaCache[url].length);
+            resolve(response.mediaCache[url]);
+          } else {
+            console.error('[Background] No media data in response');
+            resolve(null);
+          }
+        } else {
+          console.error('[Background] Media fetch failed, response:', response);
+          resolve(null);
+        }
+      });
+    });
+  } catch (error) {
+    console.error('[Background] Error in fetchSingleMediaAsBase64:', error);
+    return null;
   }
 }
 
@@ -719,63 +856,55 @@ chrome.runtime.onConnect.addListener((port) => {
             message: 'Downloaded HTML archive'
           });
         } else if (msg.action === 'captureScreenshot') {
-          // Capture screenshot of the current tab
+          // Render Instagram-style screenshot
           const { filename, saveAs } = msg.data;
 
-          chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-            if (tabs[0]) {
-              try {
-                const tabId = tabs[0].id;
+          try {
+            console.log('[Background] Rendering Instagram-style screenshot...');
 
-                // Step 1: Hide avatar before screenshot
-                console.log('[Background] Hiding avatar for screenshot...');
-                await chrome.tabs.sendMessage(tabId, { action: 'hideAvatar' });
+            // Get post info from current data
+            const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
+            const media = currentData.media?.media?.[0];
 
-                // Step 2: Wait for CSS to apply
-                await new Promise(resolve => setTimeout(resolve, 100));
-
-                // Step 3: Capture screenshot
-                console.log('[Background] Capturing screenshot...');
-                const dataUrl = await chrome.tabs.captureVisibleTab(null, {
-                  format: 'png',
-                  quality: 100
-                });
-
-                // Step 4: Restore avatar immediately
-                console.log('[Background] Restoring avatar...');
-                chrome.tabs.sendMessage(tabId, { action: 'restoreAvatar' });
-
-                // Step 5: Crop the screenshot (remove 15% from left, 10% from bottom)
-                const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
-
-                // Step 6: Download
-                await downloadFile(croppedDataUrl, filename, saveAs);
-
-                port.postMessage({
-                  type: 'success',
-                  message: 'Screenshot captured successfully!'
-                });
-              } catch (error) {
-                console.error('[Background] Screenshot error:', error);
-
-                // Try to restore avatar even if screenshot failed
-                try {
-                  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                    if (tabs[0]) {
-                      chrome.tabs.sendMessage(tabs[0].id, { action: 'restoreAvatar' });
-                    }
-                  });
-                } catch (e) {
-                  console.error('[Background] Failed to restore avatar:', e);
-                }
-
-                port.postMessage({
-                  type: 'error',
-                  message: 'Failed to capture screenshot: ' + error.message
-                });
-              }
+            if (!media) {
+              throw new Error('No media available for screenshot');
             }
-          });
+
+            // Fetch the first media as base64 (handle videos by capturing a frame)
+            const isVideo = !!media.video_url;
+            const mediaUrl = media.video_url || media.image_url;
+            console.log('[Background] Fetching media for screenshot:', mediaUrl?.substring(0, 50) + '...', 'isVideo:', isVideo);
+
+            const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo);
+            if (!mediaDataUrl) {
+              throw new Error('Failed to fetch media for screenshot');
+            }
+            console.log('[Background] Media fetched successfully, length:', mediaDataUrl.length);
+
+            // Fetch avatar as base64 if available
+            let avatarDataUrl = null;
+            if (postInfo.profile_pic_url) {
+              const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url]);
+              avatarDataUrl = avatarCache[postInfo.profile_pic_url] || null;
+            }
+
+            // Render the screenshot
+            const screenshotDataUrl = await renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl);
+
+            // Download
+            await downloadFile(screenshotDataUrl, filename, saveAs);
+
+            port.postMessage({
+              type: 'success',
+              message: 'Screenshot captured successfully!'
+            });
+          } catch (error) {
+            console.error('[Background] Screenshot error:', error);
+            port.postMessage({
+              type: 'error',
+              message: 'Failed to capture screenshot: ' + error.message
+            });
+          }
         } else if (msg.action === 'downloadAll') {
           const { saveAs } = msg.data;
 
@@ -870,90 +999,76 @@ chrome.runtime.onConnect.addListener((port) => {
           const htmlFilename = `Instagram/${username}/${folderName}/${filePrefix}_archive.html`;
           await downloadHTML(htmlContent, htmlFilename, false);
 
-          // Capture screenshot
-          chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-            if (tabs[0]) {
-              try {
-                const tabId = tabs[0].id;
-
-                if (activePopupPort) {
-                  activePopupPort.postMessage({
-                    type: 'progress',
-                    message: '📸 Capturing screenshot...'
-                  });
-                }
-
-                // Hide avatar before screenshot
-                console.log('[Background] Hiding avatar for screenshot...');
-                await chrome.tabs.sendMessage(tabId, { action: 'hideAvatar' });
-
-                // Wait for CSS to apply
-                await new Promise(resolve => setTimeout(resolve, 100));
-
-                // Capture screenshot
-                const dataUrl = await chrome.tabs.captureVisibleTab(null, {
-                  format: 'png',
-                  quality: 100
-                });
-
-                // Restore avatar immediately
-                console.log('[Background] Restoring avatar...');
-                chrome.tabs.sendMessage(tabId, { action: 'restoreAvatar' });
-
-                // Crop the screenshot (remove 15% from left, 10% from bottom)
-                const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
-
-                const screenshotFilename = `Instagram/${username}/${folderName}/${filePrefix}_screenshot.png`;
-                await downloadFile(croppedDataUrl, screenshotFilename, false);
-
-                // Mark as downloaded
-                const shortcode = postInfo.shortcode;
-                if (shortcode) {
-                  await markAsDownloaded(shortcode);
-                }
-
-                port.postMessage({
-                  type: 'success',
-                  message: 'Downloaded all content successfully!'
-                });
-              } catch (error) {
-                console.error('[Background] Screenshot error:', error);
-
-                // Try to restore avatar even if screenshot failed
-                try {
-                  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-                    if (tabs[0]) {
-                      chrome.tabs.sendMessage(tabs[0].id, { action: 'restoreAvatar' });
-                    }
-                  });
-                } catch (e) {
-                  console.error('[Background] Failed to restore avatar:', e);
-                }
-
-                // Still mark as downloaded even if screenshot failed
-                const shortcode = postInfo.shortcode;
-                if (shortcode) {
-                  await markAsDownloaded(shortcode);
-                }
-
-                port.postMessage({
-                  type: 'success',
-                  message: 'Downloaded all content (screenshot failed)'
-                });
-              }
-            } else {
-              // Mark as downloaded
-              const shortcode = postInfo.shortcode;
-              if (shortcode) {
-                await markAsDownloaded(shortcode);
-              }
-
-              port.postMessage({
-                type: 'success',
-                message: 'Downloaded all content successfully!'
+          // Capture Instagram-style screenshot
+          try {
+            if (activePopupPort) {
+              activePopupPort.postMessage({
+                type: 'progress',
+                message: '📸 Rendering screenshot...'
               });
             }
-          });
+
+            const media = currentData.media?.media?.[0];
+            if (media) {
+              // Fetch the first media as base64 (handle videos by capturing a frame)
+              const isVideo = !!media.video_url;
+              const mediaUrl = media.video_url || media.image_url;
+              console.log('[Background] Fetching media for downloadAll screenshot...', 'isVideo:', isVideo);
+
+              const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo);
+
+              if (mediaDataUrl) {
+                // Fetch avatar as base64 if available
+                let avatarDataUrl = null;
+                if (postInfo.profile_pic_url) {
+                  const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url]);
+                  avatarDataUrl = avatarCache[postInfo.profile_pic_url] || null;
+                }
+
+                // Render the screenshot
+                const screenshotDataUrl = await renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl);
+
+                const screenshotFilename = `Instagram/${username}/${folderName}/${filePrefix}_screenshot.png`;
+                await downloadFile(screenshotDataUrl, screenshotFilename, false);
+              } else {
+                console.warn('[Background] Could not fetch media for screenshot');
+              }
+            }
+
+            // Mark as downloaded with full post info for Sheets sync
+            const shortcode = postInfo.shortcode;
+            if (shortcode) {
+              const enrichedPostInfo = {
+                ...postInfo,
+                media_count: currentData.media?.media?.length || 0,
+                comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
+              };
+              await markAsDownloaded(shortcode, enrichedPostInfo);
+            }
+
+            port.postMessage({
+              type: 'success',
+              message: 'Downloaded all content successfully!'
+            });
+          } catch (error) {
+            console.error('[Background] Screenshot error:', error);
+
+            // Still mark as downloaded even if screenshot failed
+            const shortcode = postInfo.shortcode;
+            if (shortcode) {
+              const enrichedPostInfo = {
+                ...postInfo,
+                media_count: currentData.media?.media?.length || 0,
+                comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
+              };
+              await markAsDownloaded(shortcode, enrichedPostInfo);
+            }
+
+            port.postMessage({
+              type: 'success',
+              message: 'Downloaded all content (screenshot failed)'
+            });
+          }
         } else if (msg.action === 'startBatch') {
           // Start batch processing
           const { urls, skipDownloaded } = msg.data;
@@ -965,12 +1080,18 @@ chrome.runtime.onConnect.addListener((port) => {
           batchState.isProcessing = true;
           batchState.port = port;
           batchState.skipDownloaded = skipDownloaded !== false; // Default to true
+          // Reset rate limiting state for new batch
+          batchState.consecutiveErrors = 0;
+          batchState.last429Time = null;
+          batchState.currentPauseDuration = 0;
+          batchState.isPaused = false;
 
           // Get current tab
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           batchState.tabId = tab.id;
 
           console.log('[Background] Starting batch processing:', urls.length, 'URLs, skipDownloaded:', batchState.skipDownloaded);
+          console.log('[Background] Rate limit protection: Progressive delays enabled, cooldowns every 100 posts, auto-pause on 429');
           processNextBatchUrl();
 
         } else if (msg.action === 'getDownloadStats') {
@@ -1003,16 +1124,170 @@ chrome.runtime.onConnect.addListener((port) => {
           });
 
         } else if (msg.action === 'stopBatch') {
-          // Stop batch processing
+          // Stop batch processing and save state for resume
           console.log('[Background] Stopping batch processing');
           batchState.isProcessing = false;
+
+          // Save state for potential resume
+          await saveBatchState();
+
           port.postMessage({
             type: 'batchStopped',
             data: {
               successCount: batchState.successCount,
-              failedUrls: batchState.failedUrls
+              failedUrls: batchState.failedUrls,
+              canResume: batchState.currentIndex < batchState.queue.length,
+              remaining: batchState.queue.length - batchState.currentIndex
             }
           });
+
+        } else if (msg.action === 'getSavedBatchState') {
+          // Check if there's a saved batch state to resume
+          const savedState = await loadSavedBatchState();
+          port.postMessage({
+            type: 'savedBatchState',
+            data: savedState
+          });
+
+        } else if (msg.action === 'resumeBatch') {
+          // Resume a previously saved batch
+          const savedState = await loadSavedBatchState();
+          if (savedState) {
+            batchState.queue = savedState.queue;
+            batchState.currentIndex = savedState.currentIndex;
+            batchState.successCount = savedState.successCount;
+            batchState.skippedCount = savedState.skippedCount;
+            batchState.failedUrls = savedState.failedUrls;
+            batchState.skipDownloaded = savedState.skipDownloaded;
+            batchState.isProcessing = true;
+            batchState.port = port;
+            batchState.consecutiveErrors = 0;
+            batchState.last429Time = null;
+            batchState.currentPauseDuration = 0;
+            batchState.isPaused = false;
+
+            // Get current tab
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            batchState.tabId = tab.id;
+
+            const remaining = savedState.queue.length - savedState.currentIndex;
+            console.log('[Background] Resuming batch:', remaining, 'posts remaining');
+            port.postMessage({
+              type: 'batchResumed',
+              data: {
+                remaining,
+                total: savedState.queue.length,
+                alreadyCompleted: savedState.successCount
+              }
+            });
+
+            processNextBatchUrl();
+          } else {
+            port.postMessage({
+              type: 'error',
+              message: 'No saved batch state to resume'
+            });
+          }
+
+        } else if (msg.action === 'clearSavedBatch') {
+          // Clear saved batch state
+          await clearSavedBatchState();
+          port.postMessage({
+            type: 'savedBatchCleared',
+            data: { success: true }
+          });
+
+        } else if (msg.action === 'filterUrlsByTeamSync') {
+          // Filter URLs to exclude ones already downloaded by team
+          const { urls } = msg.data;
+          const filteredUrls = [];
+          const alreadyDownloaded = [];
+
+          if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+            for (const url of urls) {
+              const shortcode = extractShortcode(url);
+              if (shortcode) {
+                const downloadRecord = SheetsSync.isDownloaded(shortcode);
+                if (downloadRecord) {
+                  alreadyDownloaded.push({
+                    url,
+                    shortcode,
+                    downloadedBy: downloadRecord.downloader,
+                    downloadedAt: downloadRecord.timestamp
+                  });
+                } else {
+                  filteredUrls.push(url);
+                }
+              } else {
+                filteredUrls.push(url);
+              }
+            }
+          } else {
+            // If Team Sync not enabled, return all URLs
+            filteredUrls.push(...urls);
+          }
+
+          port.postMessage({
+            type: 'urlsFilteredByTeam',
+            data: {
+              filteredUrls,
+              alreadyDownloaded,
+              originalCount: urls.length,
+              filteredCount: filteredUrls.length,
+              removedCount: alreadyDownloaded.length
+            }
+          });
+
+        // ===== GOOGLE SHEETS SYNC HANDLERS =====
+
+        } else if (msg.action === 'configureSheets') {
+          // Configure Sheets sync settings
+          const { webAppUrl, userId } = msg.data;
+          const result = await SheetsSync.configure(webAppUrl, userId);
+          port.postMessage({ type: 'sheetsConfigured', data: result });
+
+        } else if (msg.action === 'getSheetsStatus') {
+          // Get current sync status
+          const status = SheetsSync.getStatus();
+          port.postMessage({ type: 'sheetsStatus', data: status });
+
+        } else if (msg.action === 'refreshSheetsCache') {
+          // Force refresh cache from Sheets
+          const result = await SheetsSync.refreshCache();
+          port.postMessage({ type: 'sheetsCacheRefreshed', data: result });
+
+        } else if (msg.action === 'getProfileCompletion') {
+          // Get profile completion stats
+          const { username } = msg.data;
+          const stats = SheetsSync.getProfileStats(username);
+          port.postMessage({ type: 'profileCompletion', data: stats });
+
+        } else if (msg.action === 'updateProfileTotal') {
+          // Update profile total posts for completion %
+          const { username, totalPosts } = msg.data;
+          const result = await SheetsSync.updateProfileTotal(username, totalPosts);
+          port.postMessage({ type: 'profileTotalUpdated', data: result });
+
+        } else if (msg.action === 'checkSheetsDownloaded') {
+          // Check if shortcodes are downloaded in Sheets
+          const { shortcodes } = msg.data;
+          const results = {};
+          shortcodes.forEach(sc => {
+            results[sc] = SheetsSync.isDownloaded(sc);
+          });
+          port.postMessage({ type: 'sheetsDownloadedCheck', data: results });
+
+        } else if (msg.action === 'setSkipTeamDownloaded') {
+          // Set skip team downloaded preference
+          const { skip } = msg.data;
+          const result = await SheetsSync.setSkipTeamDownloaded(skip);
+          port.postMessage({ type: 'skipTeamDownloadedSet', data: result });
+
+        } else if (msg.action === 'checkTeamDownloaded') {
+          // Check if post was downloaded by another team member
+          const { shortcode } = msg.data;
+          const record = SheetsSync.isDownloadedByOthers(shortcode);
+          port.postMessage({ type: 'teamDownloadedCheck', data: { downloaded: !!record, record } });
         }
       } catch (error) {
         console.error('[Background] Error:', error);
@@ -1043,6 +1318,9 @@ async function processNextBatchUrl() {
     // Batch complete
     console.log('[Background] Batch processing complete');
     batchState.isProcessing = false;
+
+    // Clear saved batch state since we completed successfully
+    await clearSavedBatchState();
 
     if (batchState.port) {
       batchState.port.postMessage({
@@ -1233,57 +1511,189 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         const htmlFilename = `Instagram/${username}/${folderName}/${filePrefix}_archive.html`;
         await downloadHTML(htmlContent, htmlFilename, false);
 
-        // Capture screenshot
+        // Capture Instagram-style screenshot
         try {
-          // Hide avatar before screenshot
-          console.log('[Background] Hiding avatar for batch screenshot...');
-          await chrome.tabs.sendMessage(tab.id, { action: 'hideAvatar' });
+          console.log('[Background] Rendering batch screenshot...');
 
-          // Wait for CSS to apply
-          await new Promise(resolve => setTimeout(resolve, 100));
+          const media = currentData.media?.media?.[0];
+          if (media) {
+            // Fetch the first media as base64 (handle videos by capturing a frame)
+            const isVideo = !!media.video_url;
+            const mediaUrl = media.video_url || media.image_url;
 
-          const dataUrl = await chrome.tabs.captureVisibleTab(null, {
-            format: 'png',
-            quality: 100
-          });
+            const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo);
 
-          // Restore avatar after capture
-          console.log('[Background] Restoring avatar after batch screenshot...');
-          chrome.tabs.sendMessage(tab.id, { action: 'restoreAvatar' });
+            if (mediaDataUrl) {
+              // Fetch avatar as base64 if available
+              let avatarDataUrl = null;
+              if (postInfo.profile_pic_url) {
+                const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url]);
+                avatarDataUrl = avatarCache[postInfo.profile_pic_url] || null;
+              }
 
-          const croppedDataUrl = await cropScreenshot(dataUrl, 15, 10);
-          const screenshotFilename = `Instagram/${username}/${folderName}/${filePrefix}_screenshot.png`;
-          await downloadFile(croppedDataUrl, screenshotFilename, false);
+              // Render the screenshot
+              const screenshotDataUrl = await renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl);
+
+              const screenshotFilename = `Instagram/${username}/${folderName}/${filePrefix}_screenshot.png`;
+              await downloadFile(screenshotDataUrl, screenshotFilename, false);
+            } else {
+              console.warn('[Background] Could not fetch media for batch screenshot');
+            }
+          }
         } catch (error) {
           console.error('[Background] Screenshot failed:', error);
-          // Try to restore avatar even if screenshot failed
-          try {
-            chrome.tabs.sendMessage(tab.id, { action: 'restoreAvatar' });
-          } catch (e) {
-            console.error('[Background] Failed to restore avatar:', e);
-          }
         }
 
         console.log('[Background] Successfully downloaded:', tab.url);
         batchState.successCount++;
 
-        // Mark this post as downloaded
+        // Mark this post as downloaded with enriched info for Sheets sync
         const downloadedShortcode = extractShortcode(tab.url);
         if (downloadedShortcode) {
-          await markAsDownloaded(downloadedShortcode);
+          const enrichedPostInfo = {
+            ...postInfo,
+            shortcode: downloadedShortcode,
+            media_count: currentData.media?.media?.length || 0,
+            comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
+          };
+          await markAsDownloaded(downloadedShortcode, enrichedPostInfo);
+        }
+
+        // Save batch state periodically (every 5 successful downloads)
+        if (batchState.successCount % 5 === 0) {
+          await saveBatchState();
         }
       } else {
         throw new Error('Failed to extract data');
       }
     } catch (error) {
       console.error('[Background] Failed to process URL:', tab.url, error);
-      batchState.failedUrls.push({ url: tab.url, error: error.message });
+      const errorMsg = error.message || '';
+
+      // Check if this is a 429 rate limit error
+      const is429Error = errorMsg.includes('429') || errorMsg.includes('rate limit') || errorMsg.includes('Rate limit');
+
+      if (is429Error) {
+        batchState.consecutiveErrors++;
+        batchState.last429Time = Date.now();
+
+        // Calculate pause duration with exponential backoff
+        const basePause = CONFIG.TIMING.BATCH_429_HANDLING?.PAUSE_DURATION || 120000;
+        const backoffMultiplier = CONFIG.TIMING.BATCH_429_HANDLING?.BACKOFF_MULTIPLIER || 2;
+        batchState.currentPauseDuration = basePause * Math.pow(backoffMultiplier, batchState.consecutiveErrors - 1);
+
+        const maxRetries = CONFIG.TIMING.BATCH_429_HANDLING?.MAX_429_RETRIES || 3;
+
+        if (batchState.consecutiveErrors >= maxRetries) {
+          // Too many 429 errors, stop batch processing
+          console.error('[Background] 🛑 Too many 429 errors, stopping batch processing');
+          batchState.isProcessing = false;
+          batchState.failedUrls.push({ url: tab.url, error: 'Rate limited - batch stopped after multiple 429 errors' });
+
+          if (batchState.port) {
+            batchState.port.postMessage({
+              type: 'batchComplete',
+              data: {
+                successCount: batchState.successCount,
+                skippedCount: batchState.skippedCount,
+                failedUrls: batchState.failedUrls,
+                total: batchState.queue.length,
+                stoppedDueToRateLimit: true
+              }
+            });
+          }
+          return;
+        }
+
+        // Pause and retry this URL
+        console.warn(`[Background] 🚫 Rate limited! Pausing for ${batchState.currentPauseDuration / 1000} seconds before retry...`);
+        batchState.isPaused = true;
+
+        if (batchState.port) {
+          batchState.port.postMessage({
+            type: 'batchProgress',
+            data: {
+              current: batchState.currentIndex + 1,
+              total: batchState.queue.length,
+              url: tab.url,
+              successCount: batchState.successCount,
+              skippedCount: batchState.skippedCount,
+              failedUrls: batchState.failedUrls,
+              isPaused: true,
+              pauseReason: `Rate limited - pausing ${Math.round(batchState.currentPauseDuration / 1000)}s`,
+              pauseDuration: batchState.currentPauseDuration
+            }
+          });
+        }
+
+        // Don't increment currentIndex - we'll retry this URL
+        setTimeout(() => {
+          batchState.isPaused = false;
+          processNextBatchUrl();
+        }, batchState.currentPauseDuration);
+        return;
+      } else {
+        // Non-429 error
+        batchState.failedUrls.push({ url: tab.url, error: errorMsg });
+      }
     }
 
-      // Move to next URL with delay using CONFIG
+      // Reset consecutive errors on success
+      if (!batchState.failedUrls.find(f => f.url === tab.url)) {
+        batchState.consecutiveErrors = 0;
+      }
+
+      // Move to next URL with progressive delay
       batchState.currentIndex++;
-      const delay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
-      setTimeout(() => processNextBatchUrl(), delay);
+
+      // Calculate delay with progressive increase
+      let baseDelay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
+
+      // Progressive delay: add more delay the more posts we've processed
+      if (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY?.ENABLED) {
+        const tier = Math.floor(batchState.successCount / (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.POSTS_PER_TIER || 50));
+        const additionalDelay = Math.min(
+          tier * (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.DELAY_INCREMENT || 2000),
+          CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.MAX_ADDITIONAL_DELAY || 10000
+        );
+        baseDelay += additionalDelay;
+
+        if (additionalDelay > 0) {
+          console.log(`[Background] 📊 Progressive delay: +${additionalDelay/1000}s (tier ${tier})`);
+        }
+      }
+
+      // Check for cooldown period
+      if (CONFIG.TIMING.BATCH_COOLDOWN?.ENABLED) {
+        const postsBeforeCooldown = CONFIG.TIMING.BATCH_COOLDOWN.POSTS_BEFORE_COOLDOWN || 100;
+        const cooldownDuration = CONFIG.TIMING.BATCH_COOLDOWN.COOLDOWN_DURATION || 60000;
+
+        if (batchState.successCount > 0 && batchState.successCount % postsBeforeCooldown === 0) {
+          console.log(`[Background] ☕ Cooldown: Taking a ${cooldownDuration/1000}s break after ${batchState.successCount} posts...`);
+
+          if (batchState.port) {
+            batchState.port.postMessage({
+              type: 'batchProgress',
+              data: {
+                current: batchState.currentIndex,
+                total: batchState.queue.length,
+                url: 'Cooldown break...',
+                successCount: batchState.successCount,
+                skippedCount: batchState.skippedCount,
+                failedUrls: batchState.failedUrls,
+                isPaused: true,
+                pauseReason: `Cooldown break (${cooldownDuration/1000}s) after ${batchState.successCount} posts`,
+                pauseDuration: cooldownDuration
+              }
+            });
+          }
+
+          baseDelay = cooldownDuration;
+        }
+      }
+
+      console.log(`[Background] ⏱️ Next post in ${(baseDelay/1000).toFixed(1)}s`);
+      setTimeout(() => processNextBatchUrl(), baseDelay);
     } else {
       console.log('[Background] ⚠️ Not an Instagram post/reel URL, skipping');
     }
@@ -1291,3 +1701,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 });
 
 console.log('[Instagram Downloader V2] 🚀 Background script loaded - Optimized version');
+
+// Initialize Google Sheets Sync module
+if (typeof SheetsSync !== 'undefined') {
+  SheetsSync.init().then(enabled => {
+    console.log('[Background] SheetsSync initialized:', enabled ? 'ENABLED' : 'disabled');
+  }).catch(error => {
+    console.error('[Background] SheetsSync init error:', error);
+  });
+}

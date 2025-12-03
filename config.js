@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '2.0.0',
-  VERSION_NAME: 'V2 - Optimized',
-  RELEASE_DATE: '2025-01-17',
+  VERSION: '7.0.0',
+  VERSION_NAME: 'V7.0 Beta - Team Sync & Resume',
+  RELEASE_DATE: '2025-12-01',
 
   // ============================================================================
   // TIMING & DELAYS
@@ -32,11 +32,33 @@ const CONFIG = {
     HTML_GENERATION_TIMEOUT: 15000,           // Estimated HTML generation time (ms)
 
     // Batch processing
-    BATCH_DELAY_MIN: 3000,                    // Minimum delay between batch items (ms)
-    BATCH_DELAY_MAX: 5000,                    // Maximum delay between batch items (ms)
+    BATCH_DELAY_MIN: 5000,                    // Minimum delay between batch items (ms) - increased from 3000
+    BATCH_DELAY_MAX: 8000,                    // Maximum delay between batch items (ms) - increased from 5000
     BATCH_CONCURRENT_MAX: 3,                  // Max posts to process in parallel
     BATCH_RETRY_MAX: 2,                       // Max retries for failed batch items
     BATCH_RETRY_DELAY: 5000,                  // Delay before retrying failed item (ms)
+
+    // Progressive delay increases (to avoid 429 after many posts)
+    BATCH_PROGRESSIVE_DELAY: {
+      ENABLED: true,                          // Enable progressive delays
+      POSTS_PER_TIER: 50,                     // Increase delay every X posts
+      DELAY_INCREMENT: 2000,                  // Add this many ms per tier
+      MAX_ADDITIONAL_DELAY: 10000,            // Maximum additional delay (ms)
+    },
+
+    // Cooldown periods (rest periods during large batches)
+    BATCH_COOLDOWN: {
+      ENABLED: true,                          // Enable cooldown periods
+      POSTS_BEFORE_COOLDOWN: 100,             // Take a break every X posts
+      COOLDOWN_DURATION: 60000,               // Rest for 60 seconds
+    },
+
+    // 429 Error handling
+    BATCH_429_HANDLING: {
+      PAUSE_DURATION: 120000,                 // Pause for 2 minutes on 429 error
+      MAX_429_RETRIES: 3,                     // Max times to retry after 429 before stopping
+      BACKOFF_MULTIPLIER: 2,                  // Double the pause each time
+    },
   },
 
   // ============================================================================
@@ -207,6 +229,33 @@ const CONFIG = {
     ENABLE_VERBOSE_LOGS: true,                // Extra detailed logs
     LOG_API_REQUESTS: true,                   // Log all API calls
     LOG_RATE_LIMITS: true,                    // Log rate limit info
+  },
+
+  // ============================================================================
+  // GOOGLE SHEETS SYNC (Team Download Tracking)
+  // ============================================================================
+
+  SHEETS_SYNC: {
+    // Sync timing
+    SYNC_INTERVAL: 300000,                    // Auto-refresh cache every 5 minutes (ms)
+    CACHE_EXPIRY: 600000,                     // Cache expires after 10 minutes (ms)
+
+    // Request settings
+    FETCH_TIMEOUT: 30000,                     // Timeout for Apps Script requests (ms)
+    MAX_RETRIES: 3,                           // Max retry attempts for failed requests
+    RETRY_DELAY: 2000,                        // Base delay between retries (ms)
+
+    // Batch settings
+    BATCH_SIZE: 50,                           // Max records per batch sync request
+
+    // Storage keys
+    STORAGE_KEYS: {
+      WEB_APP_URL: 'sheetsWebAppUrl',
+      USER_ID: 'sheetsUserId',
+      ENABLED: 'sheetsSyncEnabled',
+      LAST_SYNC: 'sheetsLastSync',
+      SKIP_TEAM: 'sheetsSkipTeamDownloaded'
+    }
   },
 
   // ============================================================================

@@ -148,6 +148,20 @@ async function init() {
       if (typeof msg.data.count === 'number') {
         downloadHistoryCount.textContent = msg.data.count;
       }
+    } else if (msg.type === 'savedBatchState') {
+      // Handle saved batch state for resume functionality
+      handleSavedBatchState(msg.data);
+    } else if (msg.type === 'batchResumed') {
+      // Handle batch resumed confirmation
+      handleBatchResumed(msg.data);
+    } else if (msg.type === 'urlsFilteredByTeam') {
+      // Handle filtered URLs for profile download
+      handleUrlsFilteredByTeam(msg.data);
+    }
+
+    // Handle sync-related messages (defined at bottom of file)
+    if (typeof handleSyncMessages === 'function') {
+      handleSyncMessages(msg);
     }
   });
 
@@ -502,11 +516,25 @@ const skipDownloadedToggle = document.getElementById('skipDownloadedToggle');
 const downloadHistoryCount = document.getElementById('downloadHistoryCount');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
+// Resume batch elements
+const resumeBatchSection = document.getElementById('resumeBatchSection');
+const resumeBatchInfo = document.getElementById('resumeBatchInfo');
+const resumeBatchBtn = document.getElementById('resumeBatchBtn');
+const discardBatchBtn = document.getElementById('discardBatchBtn');
+
+// Team filter elements
+const filterByTeamToggle = document.getElementById('filterByTeamToggle');
+const profileTeamFilterInfo = document.getElementById('profileTeamFilterInfo');
+const profileNewPostsCount = document.getElementById('profileNewPostsCount');
+const profileTeamDownloadedCount = document.getElementById('profileTeamDownloadedCount');
+
 // Toggle batch section
 toggleBatchBtn.addEventListener('click', () => {
   if (batchContent.classList.contains('hidden')) {
     batchContent.classList.remove('hidden');
     toggleBatchBtn.textContent = 'Hide';
+    // Check for saved batch when opening batch section
+    checkForSavedBatch();
   } else {
     batchContent.classList.add('hidden');
     toggleBatchBtn.textContent = 'Show';
@@ -542,6 +570,93 @@ clearHistoryBtn.addEventListener('click', async () => {
     showStatus('error', '❌ Failed to clear history');
   }
 });
+
+// ===== RESUME BATCH FUNCTIONALITY =====
+
+// Check for saved batch state
+function checkForSavedBatch() {
+  if (port) {
+    port.postMessage({ action: 'getSavedBatchState' });
+  }
+}
+
+// Resume batch button
+if (resumeBatchBtn) {
+  resumeBatchBtn.addEventListener('click', () => {
+    if (!port) return;
+
+    // Reset UI
+    batchProgress.classList.remove('hidden');
+    batchResults.classList.add('hidden');
+    failedSection.classList.add('hidden');
+    resumeBatchSection.classList.add('hidden');
+
+    // Disable controls
+    startBatchBtn.disabled = true;
+    stopBatchBtn.disabled = false;
+    batchUrls.disabled = true;
+
+    port.postMessage({ action: 'resumeBatch' });
+    showStatus('info', '▶️ Resuming batch download...');
+  });
+}
+
+// Discard saved batch button
+if (discardBatchBtn) {
+  discardBatchBtn.addEventListener('click', () => {
+    if (!port) return;
+    port.postMessage({ action: 'clearSavedBatch' });
+    resumeBatchSection.classList.add('hidden');
+    showStatus('info', 'Saved batch discarded');
+  });
+}
+
+// Handle saved batch state response
+function handleSavedBatchState(data) {
+  if (data && resumeBatchSection) {
+    const remaining = data.totalInBatch - data.currentIndex;
+    resumeBatchSection.classList.remove('hidden');
+    resumeBatchInfo.textContent = `${remaining} posts remaining (${data.successCount} already completed)`;
+  } else if (resumeBatchSection) {
+    resumeBatchSection.classList.add('hidden');
+  }
+}
+
+// Handle batch resumed
+function handleBatchResumed(data) {
+  showStatus('success', `Resumed! ${data.remaining} posts remaining`);
+}
+
+// Handle filtered URLs by team (for profile download with team filter)
+function handleUrlsFilteredByTeam(data) {
+  const { originalCount, filteredUrls, removedCount } = data;
+
+  // Update info display
+  if (profileTeamFilterInfo) {
+    profileTeamFilterInfo.classList.remove('hidden');
+    profileNewPostsCount.textContent = filteredUrls.length;
+    profileTeamDownloadedCount.textContent = removedCount;
+  }
+
+  if (filteredUrls.length === 0) {
+    showStatus('info', `All ${originalCount} posts have been downloaded by team members`);
+    return;
+  }
+
+  // Fill in batch URLs textarea with filtered URLs
+  batchUrls.value = filteredUrls.join('\n');
+  urlCount.textContent = `${filteredUrls.length} URLs`;
+  urlCount.style.color = '#2e7d32';
+
+  // Show batch section if hidden
+  if (batchContent.classList.contains('hidden')) {
+    batchContent.classList.remove('hidden');
+    toggleBatchBtn.textContent = 'Hide';
+  }
+
+  const skippedMsg = removedCount > 0 ? ` (${removedCount} already downloaded by team)` : '';
+  showStatus('success', `✅ Added ${filteredUrls.length} new posts to batch download${skippedMsg}. Click "Start Batch" to begin.`);
+}
 
 // Update URL count
 batchUrls.addEventListener('input', () => {
@@ -648,17 +763,40 @@ stopBatchBtn.addEventListener('click', () => {
 
 // Update batch progress
 function updateBatchProgress(data) {
-  const { current, total, url, successCount: success, failedUrls: failed, skippedCount: skipped } = data;
+  const { current, total, url, successCount: success, failedUrls: failed, skippedCount: skipped, isPaused, pauseReason, pauseDuration } = data;
 
   batchProgressText.textContent = `${current}/${total}`;
   batchProgressBar.style.width = `${(current / total) * 100}%`;
   batchCurrentUrl.textContent = url;
 
-  // Show skipped count if any posts were skipped
-  if (skipped > 0) {
+  // Handle pause state (rate limit or cooldown)
+  if (isPaused && pauseReason) {
+    batchStatus.textContent = `⏸️ ${pauseReason}`;
+    batchStatus.style.color = '#f57c00';
+    batchProgressBar.style.background = '#f57c00';
+
+    // Show countdown if we have a pause duration
+    if (pauseDuration) {
+      let remaining = Math.ceil(pauseDuration / 1000);
+      const countdownInterval = setInterval(() => {
+        remaining--;
+        if (remaining > 0) {
+          batchStatus.textContent = `⏸️ Resuming in ${remaining}s...`;
+        } else {
+          clearInterval(countdownInterval);
+          batchStatus.style.color = '';
+          batchProgressBar.style.background = '';
+        }
+      }, 1000);
+    }
+  } else if (skipped > 0) {
     batchStatus.textContent = `Processing post ${current} of ${total}... (${skipped} skipped)`;
+    batchStatus.style.color = '';
+    batchProgressBar.style.background = '';
   } else {
     batchStatus.textContent = `Processing post ${current} of ${total}...`;
+    batchStatus.style.color = '';
+    batchProgressBar.style.background = '';
   }
 
   successCount.textContent = success;
@@ -674,12 +812,18 @@ function updateBatchProgress(data) {
 
 // Handle batch complete
 function handleBatchComplete(data) {
-  const { successCount: success, failedUrls: failed, total, skippedCount: skipped } = data;
+  const { successCount: success, failedUrls: failed, total, skippedCount: skipped, stoppedDueToRateLimit } = data;
 
   batchProgress.classList.add('hidden');
   startBatchBtn.disabled = false;
   stopBatchBtn.disabled = true;
   batchUrls.disabled = false;
+
+  // Show rate limit warning if batch was stopped due to 429 errors
+  if (stoppedDueToRateLimit) {
+    showStatus('error', `🚫 Batch stopped due to rate limiting. Downloaded ${success} posts. Wait a few minutes before trying again.`);
+    return;
+  }
 
   successCount.textContent = success;
 
@@ -881,7 +1025,7 @@ downloadProfilePostsBtn.addEventListener('click', () => {
     return;
   }
 
-  // Convert to URLs and start batch download
+  // Convert to URLs
   const urls = collectedProfilePosts.map(p => {
     const url = p.postUrl || `https://www.instagram.com/p/${p.code}/`;
     console.log('[Popup] Post URL:', url);
@@ -890,7 +1034,21 @@ downloadProfilePostsBtn.addEventListener('click', () => {
 
   console.log('[Popup] Total URLs to add:', urls.length);
 
-  // Fill in batch URLs textarea and trigger batch download
+  // Check if team filter is enabled
+  const useTeamFilter = filterByTeamToggle && filterByTeamToggle.checked;
+
+  if (useTeamFilter && port) {
+    // Filter URLs through team sync first
+    showStatus('info', '🔍 Checking team downloads...');
+    port.postMessage({
+      action: 'filterUrlsByTeamSync',
+      data: { urls }
+    });
+    // Response will be handled by handleUrlsFilteredByTeam
+    return;
+  }
+
+  // No team filter - proceed directly
   batchUrls.value = urls.join('\n');
   urlCount.textContent = `${urls.length} URLs`;
   urlCount.style.color = '#2e7d32';
@@ -912,6 +1070,272 @@ if (openViewerBtn) {
     const viewerUrl = chrome.runtime.getURL('viewer/instagram-viewer.html');
     chrome.tabs.create({ url: viewerUrl });
   });
+}
+
+// ===== GOOGLE SHEETS SYNC UI =====
+
+// Sync UI Elements
+const toggleSyncBtn = document.getElementById('toggleSyncBtn');
+const syncContent = document.getElementById('syncContent');
+const syncStatusText = document.getElementById('syncStatusText');
+const lastSyncTime = document.getElementById('lastSyncTime');
+const syncedCount = document.getElementById('syncedCount');
+const sheetsWebAppUrl = document.getElementById('sheetsWebAppUrl');
+const sheetsUserId = document.getElementById('sheetsUserId');
+const saveSyncConfigBtn = document.getElementById('saveSyncConfigBtn');
+const refreshSyncBtn = document.getElementById('refreshSyncBtn');
+const skipTeamDownloadedToggle = document.getElementById('skipTeamDownloadedToggle');
+const profileCompletionSection = document.getElementById('profileCompletionSection');
+const completionUsername = document.getElementById('completionUsername');
+const completionBar = document.getElementById('completionBar');
+const completionPct = document.getElementById('completionPct');
+const completionDownloaded = document.getElementById('completionDownloaded');
+const completionTotal = document.getElementById('completionTotal');
+const profileTotalInput = document.getElementById('profileTotalInput');
+const updateProfileTotalBtn = document.getElementById('updateProfileTotalBtn');
+const detectPostCountBtn = document.getElementById('detectPostCountBtn');
+
+// Toggle sync section
+if (toggleSyncBtn) {
+  toggleSyncBtn.addEventListener('click', () => {
+    if (syncContent.classList.contains('hidden')) {
+      syncContent.classList.remove('hidden');
+      toggleSyncBtn.textContent = 'Hide';
+      loadSyncStatus();
+    } else {
+      syncContent.classList.add('hidden');
+      toggleSyncBtn.textContent = 'Show';
+    }
+  });
+}
+
+// Load sync status from background
+function loadSyncStatus() {
+  if (port) {
+    port.postMessage({ action: 'getSheetsStatus' });
+  }
+}
+
+// Save sync configuration
+if (saveSyncConfigBtn) {
+  saveSyncConfigBtn.addEventListener('click', () => {
+    const webAppUrl = sheetsWebAppUrl.value.trim();
+    const userId = sheetsUserId.value.trim();
+
+    if (!webAppUrl || !userId) {
+      showStatus('error', 'Please fill in both URL and User ID');
+      return;
+    }
+
+    if (!webAppUrl.includes('script.google.com')) {
+      showStatus('error', 'Please enter a valid Google Apps Script URL');
+      return;
+    }
+
+    showStatus('info', 'Saving configuration...');
+    port.postMessage({
+      action: 'configureSheets',
+      data: { webAppUrl, userId }
+    });
+  });
+}
+
+// Manual sync refresh
+if (refreshSyncBtn) {
+  refreshSyncBtn.addEventListener('click', () => {
+    showStatus('info', 'Syncing with Google Sheets...');
+    port.postMessage({ action: 'refreshSheetsCache' });
+  });
+}
+
+// Skip team downloaded toggle
+if (skipTeamDownloadedToggle) {
+  skipTeamDownloadedToggle.addEventListener('change', () => {
+    port.postMessage({
+      action: 'setSkipTeamDownloaded',
+      data: { skip: skipTeamDownloadedToggle.checked }
+    });
+  });
+}
+
+// Update profile total posts
+if (updateProfileTotalBtn) {
+  updateProfileTotalBtn.addEventListener('click', async () => {
+    const totalPosts = parseInt(profileTotalInput.value);
+    const username = completionUsername.textContent.replace('@', '');
+
+    if (!totalPosts || totalPosts < 1) {
+      showStatus('error', 'Enter a valid number of posts');
+      return;
+    }
+
+    showStatus('info', 'Updating profile total...');
+    port.postMessage({
+      action: 'updateProfileTotal',
+      data: { username, totalPosts }
+    });
+  });
+}
+
+// Detect post count from page
+if (detectPostCountBtn) {
+  detectPostCountBtn.addEventListener('click', async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      detectPostCountBtn.disabled = true;
+      detectPostCountBtn.textContent = '...';
+
+      chrome.tabs.sendMessage(tab.id, { action: 'getProfilePostCount' }, (response) => {
+        detectPostCountBtn.disabled = false;
+        detectPostCountBtn.textContent = 'Detect';
+
+        if (chrome.runtime.lastError) {
+          showStatus('error', 'Could not detect post count. Make sure you are on a profile page.');
+          return;
+        }
+
+        if (response && response.success && response.postCount) {
+          profileTotalInput.value = response.postCount;
+          profileTotalInput.style.backgroundColor = '#e8f5e9';
+          setTimeout(() => {
+            profileTotalInput.style.backgroundColor = '';
+          }, 2000);
+          showStatus('success', `Detected ${response.postCount} posts`);
+        } else {
+          showStatus('warning', 'Could not detect post count. Please enter manually.');
+        }
+      });
+    } catch (error) {
+      detectPostCountBtn.disabled = false;
+      detectPostCountBtn.textContent = 'Detect';
+      showStatus('error', 'Error detecting post count');
+    }
+  });
+}
+
+// Check profile completion when on profile page
+async function checkProfileCompletionForSync() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const url = tab.url || '';
+
+    // Check if on profile page
+    const isProfilePage = url.includes('instagram.com/') &&
+      !url.includes('/p/') &&
+      !url.includes('/reel/') &&
+      !url.includes('/reels/') &&
+      !url.includes('/explore/') &&
+      !url.includes('/direct/') &&
+      !url.includes('/accounts/') &&
+      !url.includes('/stories/');
+
+    if (isProfilePage) {
+      const match = url.match(/instagram\.com\/([^\/\?\#]+)/);
+      const username = match ? match[1] : null;
+
+      if (username && !['explore', 'direct', 'accounts', 'stories', 'reels'].includes(username)) {
+        // Get profile completion stats
+        port.postMessage({
+          action: 'getProfileCompletion',
+          data: { username }
+        });
+
+        // Also try to auto-detect post count from the page
+        chrome.tabs.sendMessage(tab.id, { action: 'getProfilePostCount' }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('[Popup] Could not get post count:', chrome.runtime.lastError.message);
+            return;
+          }
+          if (response && response.success && response.postCount) {
+            console.log('[Popup] Auto-detected post count:', response.postCount);
+            // Auto-fill the input if it's empty or different
+            if (profileTotalInput && (!profileTotalInput.value || parseInt(profileTotalInput.value) !== response.postCount)) {
+              profileTotalInput.value = response.postCount;
+              profileTotalInput.style.backgroundColor = '#e8f5e9'; // Light green to indicate auto-filled
+              setTimeout(() => {
+                profileTotalInput.style.backgroundColor = '';
+              }, 2000);
+            }
+          }
+        });
+      }
+    }
+  } catch (error) {
+    console.log('[Popup] Error checking profile completion:', error);
+  }
+}
+
+// Handle sync-related messages from background
+function handleSyncMessages(msg) {
+  if (msg.type === 'sheetsStatus') {
+    const status = msg.data;
+    syncStatusText.textContent = status.enabled ? 'Connected' : 'Not configured';
+    syncStatusText.style.color = status.enabled ? '#2e7d32' : '#8e8e8e';
+    lastSyncTime.textContent = status.lastSync ? new Date(status.lastSync).toLocaleString() : 'Never';
+    syncedCount.textContent = status.cacheSize?.downloads || 0;
+
+    // Update toggle state
+    if (skipTeamDownloadedToggle) {
+      skipTeamDownloadedToggle.checked = status.skipTeamDownloaded || false;
+    }
+
+    // Load saved config values
+    chrome.storage.local.get(['sheetsWebAppUrl', 'sheetsUserId']).then(stored => {
+      if (sheetsWebAppUrl) sheetsWebAppUrl.value = stored.sheetsWebAppUrl || '';
+      if (sheetsUserId) sheetsUserId.value = stored.sheetsUserId || '';
+    });
+
+    // Check profile completion if enabled
+    if (status.enabled) {
+      checkProfileCompletionForSync();
+    }
+  }
+
+  if (msg.type === 'sheetsConfigured') {
+    if (msg.data.success) {
+      showStatus('success', 'Sync configured successfully!');
+      loadSyncStatus();
+    } else {
+      showStatus('error', 'Configuration failed: ' + (msg.data.error || 'Unknown error'));
+    }
+  }
+
+  if (msg.type === 'sheetsCacheRefreshed') {
+    if (msg.data.success) {
+      showStatus('success', `Synced! ${msg.data.downloadCount} downloads tracked`);
+      loadSyncStatus();
+    } else {
+      showStatus('error', 'Sync failed: ' + msg.data.error);
+    }
+  }
+
+  if (msg.type === 'profileCompletion') {
+    if (msg.data && profileCompletionSection) {
+      profileCompletionSection.classList.remove('hidden');
+      completionUsername.textContent = '@' + msg.data.username;
+      completionPct.textContent = msg.data.completion_pct || 0;
+      completionDownloaded.textContent = msg.data.downloaded_count || 0;
+      completionTotal.textContent = msg.data.total_posts || 0;
+      completionBar.style.width = (msg.data.completion_pct || 0) + '%';
+      profileTotalInput.value = msg.data.total_posts || '';
+    }
+  }
+
+  if (msg.type === 'profileTotalUpdated') {
+    if (msg.data.success) {
+      showStatus('success', 'Profile total updated!');
+      checkProfileCompletionForSync();
+    } else {
+      showStatus('error', 'Failed to update: ' + msg.data.error);
+    }
+  }
+
+  if (msg.type === 'skipTeamDownloadedSet') {
+    if (msg.data.success) {
+      console.log('[Popup] Skip team downloaded preference saved');
+    }
+  }
 }
 
 // Note: init() is called from unlockExtension() after password verification

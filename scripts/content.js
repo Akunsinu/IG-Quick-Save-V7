@@ -105,6 +105,56 @@
     }
   });
 
+  // Helper function to capture a frame from a video URL
+  async function captureVideoFrame(videoUrl) {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement('video');
+      video.crossOrigin = 'anonymous';
+      video.muted = true;
+      video.playsInline = true;
+      video.src = videoUrl;
+
+      video.onloadeddata = () => {
+        // Seek to 1 second or 10% of duration, whichever is smaller
+        video.currentTime = Math.min(1, video.duration * 0.1);
+      };
+
+      video.onseeked = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+          resolve(dataUrl);
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      video.onerror = () => reject(new Error('Failed to load video'));
+
+      // Fallback timeout
+      setTimeout(() => {
+        if (video.readyState >= 2) {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = video.videoWidth || 400;
+            canvas.height = video.videoHeight || 400;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL('image/jpeg', 0.9));
+          } catch (e) {
+            reject(new Error('Video frame capture timed out'));
+          }
+        } else {
+          reject(new Error('Video failed to load'));
+        }
+      }, 5000);
+    });
+  }
+
   // Helper function to fetch image/video and convert to base64
   async function urlToBase64(url, type = 'image') {
     if (!url) return '';
@@ -249,6 +299,22 @@
         });
 
       return true; // Keep channel open for async response
+    } else if (request.action === 'captureVideoFrame') {
+      // Capture a frame from a video URL
+      const videoUrl = request.videoUrl;
+      console.log('[Content] Capturing video frame from:', videoUrl?.substring(0, 50) + '...');
+
+      captureVideoFrame(videoUrl)
+        .then(frameDataUrl => {
+          console.log('[Content] Video frame captured, length:', frameDataUrl?.length || 0);
+          sendResponse({ success: true, frameDataUrl });
+        })
+        .catch(error => {
+          console.error('[Content] Error capturing video frame:', error);
+          sendResponse({ success: false, error: error.message });
+        });
+
+      return true; // Keep channel open for async response
     } else if (request.action === 'hideAvatar') {
       // Hide user's avatar in "Add a comment" section for screenshot
       console.log('[Content] Hiding avatar for screenshot...');
@@ -324,6 +390,97 @@
       sendResponse({
         isProfilePage: isProfile && username,
         username: username
+      });
+      return false;
+    } else if (request.action === 'getProfilePostCount') {
+      // Get the post count from a profile page
+      console.log('[Content] 📩 Getting profile post count');
+
+      let postCount = null;
+      let username = null;
+
+      try {
+        // Try to get username
+        const headerUsername = document.querySelector('header h2 span');
+        if (headerUsername) {
+          username = headerUsername.innerText.trim();
+        } else {
+          const urlMatch = window.location.pathname.match(/^\/([^\/]+)\/?$/);
+          if (urlMatch) username = urlMatch[1];
+        }
+
+        // Method 1: Look for the stats list (posts, followers, following)
+        // The structure is typically: <ul><li>X posts</li><li>Y followers</li><li>Z following</li></ul>
+        const statsUl = document.querySelector('header section ul');
+        if (statsUl) {
+          const firstLi = statsUl.querySelector('li');
+          if (firstLi) {
+            // Look for the number in the first li (posts count)
+            const spans = firstLi.querySelectorAll('span');
+            for (const span of spans) {
+              const text = span.innerText.trim();
+              // Check if it's just a number (could be formatted like "1,234")
+              const numMatch = text.replace(/,/g, '').match(/^(\d+)$/);
+              if (numMatch) {
+                postCount = parseInt(numMatch[1], 10);
+                console.log('[Content] Found post count in stats:', postCount);
+                break;
+              }
+            }
+          }
+        }
+
+        // Method 2: Look for "X posts" text pattern anywhere in header
+        if (postCount === null) {
+          const headerSection = document.querySelector('header section');
+          if (headerSection) {
+            const allSpans = headerSection.querySelectorAll('span');
+            for (const span of allSpans) {
+              const text = span.innerText.trim().toLowerCase();
+              const match = text.match(/^([\d,]+)\s*posts?$/);
+              if (match) {
+                postCount = parseInt(match[1].replace(/,/g, ''), 10);
+                console.log('[Content] Found post count from text pattern:', postCount);
+                break;
+              }
+            }
+          }
+        }
+
+        // Method 3: Try the specific xpath-like structure from the user's example
+        if (postCount === null) {
+          const postSpan = document.querySelector('header section ul li span span span');
+          if (postSpan) {
+            const text = postSpan.innerText.trim().replace(/,/g, '');
+            if (/^\d+$/.test(text)) {
+              postCount = parseInt(text, 10);
+              console.log('[Content] Found post count from nested span:', postCount);
+            }
+          }
+        }
+
+        // Method 4: Look for meta content with post count
+        if (postCount === null) {
+          const metaDesc = document.querySelector('meta[name="description"]');
+          if (metaDesc) {
+            const content = metaDesc.getAttribute('content') || '';
+            const match = content.match(/([\d,]+)\s*Posts?/i);
+            if (match) {
+              postCount = parseInt(match[1].replace(/,/g, ''), 10);
+              console.log('[Content] Found post count from meta:', postCount);
+            }
+          }
+        }
+
+      } catch (error) {
+        console.error('[Content] Error getting post count:', error);
+      }
+
+      console.log('[Content] Profile post count result:', { username, postCount });
+      sendResponse({
+        success: postCount !== null,
+        username: username,
+        postCount: postCount
       });
       return false;
     }

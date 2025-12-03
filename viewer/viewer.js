@@ -744,6 +744,9 @@ function openModal(postIndex) {
 
   updateModalMedia(post);
 
+  // Reset caption expanded state
+  modalCaption.classList.remove('expanded');
+
   // Header
   const username = post.username || 'Unknown';
   const relativeTime = formatRelativeTime(post.posted_at);
@@ -931,16 +934,19 @@ function renderCommentWithId(comment, avatars = {}, index, parentIndex = '') {
   const commentUsername = comment.owner?.username || 'Unknown';
   const commentId = parentIndex ? `${parentIndex}-${index}` : `${index}`;
   const commentText = comment.text || '';
+  const likeCount = comment.like_count || 0;
+  const timestamp = comment.created_at || 0;
 
   return `
-    <div class="comment" data-comment-id="${commentId}" data-username="${escapeHtml(commentUsername).toLowerCase()}" data-text="${escapeHtml(commentText).toLowerCase()}">
+    <div class="comment" data-comment-id="${commentId}" data-username="${escapeHtml(commentUsername).toLowerCase()}" data-text="${escapeHtml(commentText).toLowerCase()}" data-commenter="${escapeHtml(commentUsername)}" data-likes="${likeCount}" data-timestamp="${timestamp}">
       ${renderAvatar(commentUsername, avatars, 'comment-avatar')}
       <div class="comment-content">
         <span class="comment-username">${escapeHtml(commentUsername)}</span>
         <span class="comment-text" data-original="${escapeHtml(commentText)}">${escapeHtml(commentText)}</span>
         <div class="comment-meta">
           <span>${date}</span>
-          <span>${formatNumber(comment.like_count || 0)} likes</span>
+          <span>${formatNumber(likeCount)} likes</span>
+          <button class="comment-screenshot-btn" title="Export comment as screenshot">📸</button>
         </div>
         ${comment.replies && comment.replies.length > 0 ? `
           <div class="comment-replies">
@@ -1416,3 +1422,139 @@ async function exportAllScreenshots() {
 
 // Export all screenshots button event listener
 exportAllScreenshotsBtn?.addEventListener('click', exportAllScreenshots);
+
+// Create comment screenshot container
+function createCommentScreenshotContainer(commentEl, post) {
+  const container = document.createElement('div');
+  container.className = 'screenshot-container';
+
+  const commenter = commentEl.dataset.commenter || 'Unknown';
+  const commentText = commentEl.querySelector('.comment-text')?.dataset.original || '';
+  const likeCount = parseInt(commentEl.dataset.likes) || 0;
+  const timestamp = parseInt(commentEl.dataset.timestamp) || 0;
+
+  // Format the date
+  const dateStr = timestamp ? new Date(timestamp * 1000).toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric'
+  }) : '';
+
+  // Get commenter avatar
+  const commenterInitial = commenter.charAt(0).toUpperCase();
+  const commenterAvatar = post.avatars?.[commenter];
+
+  // Get post author info for context
+  const postUsername = post.username || 'Unknown';
+  const postAuthorInitial = postUsername.charAt(0).toUpperCase();
+  const postAuthorAvatar = post.avatars?.[postUsername];
+
+  container.innerHTML = `
+    <div class="screenshot-comment">
+      <div class="screenshot-comment-header">
+        ${commenterAvatar
+          ? `<img class="screenshot-comment-avatar" src="${commenterAvatar}" alt="${escapeHtml(commenter)}">`
+          : `<div class="screenshot-comment-avatar">${commenterInitial}</div>`
+        }
+        <div class="screenshot-comment-body">
+          <div>
+            <span class="screenshot-comment-username">${escapeHtml(commenter)}</span>
+            <span class="screenshot-comment-text">${escapeHtml(commentText)}</span>
+          </div>
+          <div class="screenshot-comment-meta">
+            ${dateStr ? `<span>${dateStr}</span>` : ''}
+            <span>${formatNumber(likeCount)} likes</span>
+          </div>
+        </div>
+      </div>
+      <div class="screenshot-comment-context">
+        ${postAuthorAvatar
+          ? `<img class="screenshot-comment-context-avatar" src="${postAuthorAvatar}" alt="${escapeHtml(postUsername)}">`
+          : `<div class="screenshot-comment-context-avatar">${postAuthorInitial}</div>`
+        }
+        <span>Comment on @${escapeHtml(postUsername)}'s post</span>
+      </div>
+    </div>
+  `;
+
+  return container;
+}
+
+// Export individual comment screenshot
+async function exportCommentScreenshot(commentEl) {
+  const post = posts[currentPostIndex];
+  if (!post) {
+    alert('No post context available');
+    return;
+  }
+
+  // Get the button that was clicked and show loading state
+  const btn = commentEl.querySelector('.comment-screenshot-btn');
+  const originalText = btn?.textContent;
+  if (btn) {
+    btn.textContent = '⏳';
+    btn.disabled = true;
+  }
+
+  try {
+    // Create screenshot container
+    const container = createCommentScreenshotContainer(commentEl, post);
+    document.body.appendChild(container);
+
+    // Small delay for rendering
+    await new Promise(resolve => setTimeout(resolve, 150));
+
+    // Capture with html2canvas
+    const screenshotComment = container.querySelector('.screenshot-comment');
+    const canvas = await html2canvas(screenshotComment, {
+      backgroundColor: '#ffffff',
+      scale: 2,
+      useCORS: true,
+      allowTaint: true
+    });
+
+    // Build filename: {poster}_IG_COMMENT_{YYYYMMDD}_{shortcode}_{commenter}
+    const poster = post.username || 'unknown';
+    const commenter = commentEl.dataset.commenter || 'unknown';
+    const shortcode = post.shortcode || 'post';
+
+    let dateStr = 'unknown-date';
+    if (post.posted_at) {
+      const date = new Date(post.posted_at);
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      dateStr = `${year}${month}${day}`;
+    }
+
+    const filename = `${poster}_IG_COMMENT_${dateStr}_${shortcode}_${commenter}.png`;
+
+    // Download
+    const link = document.createElement('a');
+    link.download = filename;
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+
+    // Cleanup
+    document.body.removeChild(container);
+
+  } catch (error) {
+    console.error('Comment screenshot failed:', error);
+    alert('Failed to create comment screenshot: ' + error.message);
+  } finally {
+    // Restore button state
+    if (btn) {
+      btn.textContent = originalText;
+      btn.disabled = false;
+    }
+  }
+}
+
+// Event delegation for comment screenshot buttons
+document.addEventListener('click', (e) => {
+  if (e.target.classList.contains('comment-screenshot-btn')) {
+    e.stopPropagation();
+    const commentEl = e.target.closest('.comment');
+    if (commentEl) {
+      exportCommentScreenshot(commentEl);
+    }
+  }
+});

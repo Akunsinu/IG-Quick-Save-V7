@@ -243,7 +243,7 @@
     <div style="text-align: center; margin-bottom: 24px;">
       <div style="font-size: 48px; margin-bottom: 12px;">🔒</div>
       <h2>Protected Extension</h2>
-      <p>Enter password to access IG Quick Save V6.71 Beta</p>
+      <p>Enter password to access IG Quick Save V7.0 Beta</p>
     </div>
 
     <div class="password-input-group">
@@ -259,7 +259,7 @@
   <!-- Main Content (hidden until unlocked) -->
   <div id="mainContent">
     <div class="header">
-      <h1>📸 IG Quick Save V6.71 Beta</h1>
+      <h1>📸 IG Quick Save V7.0 Beta</h1>
       <p>Download media & comments from posts and profiles</p>
     </div>
 
@@ -382,6 +382,15 @@
               <div style="font-size: 12px; font-weight: 600; color: #2e7d32;">
                 ✅ Collected <span id="profileCollectedCount">0</span> posts from @<span id="profileCollectedUser">user</span>
               </div>
+              <div id="profileTeamFilterInfo" class="hidden" style="font-size: 11px; color: #1976d2; margin-top: 4px;">
+                📊 <span id="profileNewPostsCount">0</span> new posts (team has <span id="profileTeamDownloadedCount">0</span>)
+              </div>
+            </div>
+            <div style="margin-bottom: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12px;">
+                <input type="checkbox" id="filterByTeamToggle" checked style="width: 16px; height: 16px; cursor: pointer;">
+                <span>Skip posts already downloaded by team</span>
+              </label>
             </div>
             <button id="downloadProfilePostsBtn" class="primary" style="width: 100%;">
               ⬇️ Download All Posts
@@ -427,6 +436,24 @@
           </div>
         </div>
 
+        <!-- Resume Batch Section (shown when there's a saved batch) -->
+        <div id="resumeBatchSection" class="hidden" style="margin-bottom: 12px; padding: 12px; background: #fff3e0; border-radius: 8px;">
+          <div style="font-size: 12px; font-weight: 600; color: #f57c00; margin-bottom: 8px;">
+            ⏸️ Paused Batch Available
+          </div>
+          <div style="font-size: 11px; color: #8e8e8e; margin-bottom: 8px;">
+            <span id="resumeBatchInfo">0 posts remaining</span>
+          </div>
+          <div class="button-group">
+            <button id="resumeBatchBtn" class="primary" style="font-size: 12px;">
+              ▶️ Resume
+            </button>
+            <button id="discardBatchBtn" class="secondary" style="font-size: 12px;">
+              🗑️ Discard
+            </button>
+          </div>
+        </div>
+
         <div class="button-group" style="margin-bottom: 12px;">
           <button id="startBatchBtn" class="primary">
             ▶️ Start Batch
@@ -466,6 +493,104 @@
       </div>
     </div>
 
+    <!-- Google Sheets Sync Section -->
+    <div id="syncSection" class="sync-section" style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #dbdbdb;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <h3 style="font-size: 13px; font-weight: 600; color: #8e8e8e; margin: 0;">
+          <span style="color: #34a853;">📊</span> Team Sync
+        </h3>
+        <button id="toggleSyncBtn" class="secondary" style="padding: 4px 8px; font-size: 11px;">
+          Show
+        </button>
+      </div>
+
+      <div id="syncContent" class="hidden">
+        <!-- Sync Status -->
+        <div id="syncStatus" style="margin-bottom: 12px; padding: 12px; background: #f5f5f5; border-radius: 8px;">
+          <div style="font-size: 12px; margin-bottom: 8px;">
+            Status: <span id="syncStatusText" style="font-weight: 600;">Not configured</span>
+          </div>
+          <div style="font-size: 11px; color: #8e8e8e;">
+            Last sync: <span id="lastSyncTime">Never</span>
+          </div>
+          <div style="font-size: 11px; color: #8e8e8e;">
+            Tracked: <span id="syncedCount">0</span> downloads by team
+          </div>
+        </div>
+
+        <!-- Configuration -->
+        <div id="syncConfig" style="margin-bottom: 12px;">
+          <div style="margin-bottom: 8px;">
+            <label style="font-size: 11px; color: #8e8e8e; display: block; margin-bottom: 4px;">
+              Apps Script Web App URL:
+            </label>
+            <input type="url" id="sheetsWebAppUrl"
+              placeholder="https://script.google.com/macros/s/..."
+              style="width: 100%; padding: 8px; border: 1px solid #dbdbdb; border-radius: 4px; font-size: 11px;">
+          </div>
+          <div style="margin-bottom: 8px;">
+            <label style="font-size: 11px; color: #8e8e8e; display: block; margin-bottom: 4px;">
+              Your Name/ID (for tracking):
+            </label>
+            <input type="text" id="sheetsUserId"
+              placeholder="e.g., John, TeamA, etc."
+              style="width: 100%; padding: 8px; border: 1px solid #dbdbdb; border-radius: 4px; font-size: 11px;">
+          </div>
+          <div class="button-group">
+            <button id="saveSyncConfigBtn" class="primary" style="font-size: 12px;">
+              Save Config
+            </button>
+            <button id="refreshSyncBtn" class="secondary" style="font-size: 12px;">
+              Sync Now
+            </button>
+          </div>
+        </div>
+
+        <!-- Skip Team Downloaded Toggle -->
+        <div style="margin-bottom: 12px; padding: 10px; background: #e3f2fd; border-radius: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 12px;">
+            <input type="checkbox" id="skipTeamDownloadedToggle" style="width: 16px; height: 16px; cursor: pointer;">
+            <span>Skip posts downloaded by team</span>
+          </label>
+          <div style="font-size: 10px; color: #1976d2; margin-top: 6px; margin-left: 24px;">
+            When enabled, batch downloads will skip posts already downloaded by any team member
+          </div>
+        </div>
+
+        <!-- Profile Completion (visible when on profile page) -->
+        <div id="profileCompletionSection" class="hidden" style="margin-top: 12px; padding: 12px; background: #e8f5e9; border-radius: 8px;">
+          <div style="font-size: 12px; font-weight: 600; color: #2e7d32; margin-bottom: 8px;">
+            Profile Completion
+          </div>
+          <div style="font-size: 14px; font-weight: 600; margin-bottom: 4px;">
+            <span id="completionUsername">@username</span>
+          </div>
+          <div style="width: 100%; height: 8px; background: #c8e6c9; border-radius: 4px; overflow: hidden; margin-bottom: 8px;">
+            <div id="completionBar" style="width: 0%; height: 100%; background: #4caf50; transition: width 0.3s;"></div>
+          </div>
+          <div style="font-size: 11px; color: #2e7d32;">
+            <span id="completionPct">0</span>% complete (<span id="completionDownloaded">0</span>/<span id="completionTotal">0</span> posts)
+          </div>
+          <div style="margin-top: 8px;">
+            <label style="font-size: 10px; color: #8e8e8e; display: block; margin-bottom: 4px;">
+              Total posts on profile:
+            </label>
+            <div style="display: flex; gap: 8px;">
+              <input type="number" id="profileTotalInput"
+                placeholder="Total posts"
+                style="flex: 1; padding: 6px; border: 1px solid #dbdbdb; border-radius: 4px; font-size: 11px;">
+              <button id="detectPostCountBtn" class="secondary" style="font-size: 10px; padding: 6px 8px;" title="Auto-detect from page">
+                Detect
+              </button>
+              <button id="updateProfileTotalBtn" class="secondary" style="font-size: 10px; padding: 6px 12px;">
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Open Viewer Button -->
     <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid #dbdbdb;">
       <button id="openViewerBtn" class="secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px;">
@@ -476,10 +601,10 @@
     <!-- Version Info -->
     <div style="text-align: center; margin-top: 12px;">
       <div style="font-size: 10px; color: #8e8e8e;">
-        IG Quick Save V6.71 Beta
+        IG Quick Save V7.0 Beta
       </div>
       <div style="font-size: 9px; color: #c7c7c7; margin-top: 2px;">
-        Profile Scraping · Archive Viewer · Batch Download
+        Profile Scraping · Archive Viewer · Batch Download · Team Sync
       </div>
     </div>
   </div>

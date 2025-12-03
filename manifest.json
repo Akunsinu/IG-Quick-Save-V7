@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "IG Quick Save V6.71 Beta",
-  "version": "6.71.0",
-  "description": "Download media and comments from Instagram posts and profiles - with profile scraping and archive viewer",
+  "name": "IG Quick Save V7.0 Beta",
+  "version": "7.0.0",
+  "description": "Download media and comments from Instagram posts and profiles - with Team Sync, Resume, Profile Scraping & Archive Viewer",
   "permissions": [
     "activeTab",
     "downloads",
@@ -10,7 +10,9 @@
     "offscreen"
   ],
   "host_permissions": [
-    "https://www.instagram.com/*"
+    "https://www.instagram.com/*",
+    "https://script.google.com/*",
+    "https://script.googleusercontent.com/*"
   ],
   "background": {
     "service_worker": "scripts/background.js"
