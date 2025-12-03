@@ -23,6 +23,7 @@ let batchState = {
   tabId: null,
   port: null,
   skipDownloaded: true, // Default to skipping already downloaded posts
+  profileUsername: null, // Username from profile scraping (takes priority in folder names for collabs)
   // Rate limiting tracking
   consecutiveErrors: 0,
   last429Time: null,
@@ -47,6 +48,7 @@ async function saveBatchState() {
     skippedCount: batchState.skippedCount,
     failedUrls: batchState.failedUrls,
     skipDownloaded: batchState.skipDownloaded,
+    profileUsername: batchState.profileUsername, // Preserve profile username for resume
     savedAt: Date.now(),
     totalInBatch: batchState.queue.length
   };
@@ -291,9 +293,11 @@ async function downloadFile(url, filename, saveAs = false) {
   });
 }
 
-// Helper function to build custom folder name: username_IG_POSTTYPE_YYYYMMDD_shortcode
-function buildFolderName(postInfo) {
-  const username = postInfo.username || 'unknown';
+// Helper function to build custom folder name: username_IG_POSTTYPE_YYYYMMDD_shortcode[_collab_user1_user2]
+// If profileUsername is provided (from profile scraping), it takes priority as the primary username
+function buildFolderName(postInfo, profileUsername = null) {
+  // Use profileUsername if provided, otherwise use post's username
+  const primaryUsername = profileUsername || postInfo.username || 'unknown';
   const postType = (postInfo.post_type || 'post').toUpperCase();
   const shortcode = postInfo.shortcode || 'post';
 
@@ -307,12 +311,27 @@ function buildFolderName(postInfo) {
     dateStr = `${year}${month}${day}`;
   }
 
-  return `${username}_IG_${postType}_${dateStr}_${shortcode}`;
+  // Build base name
+  let folderName = `${primaryUsername}_IG_${postType}_${dateStr}_${shortcode}`;
+
+  // Add collaborators if present (excluding the primary username)
+  if (postInfo.collaborators && Array.isArray(postInfo.collaborators) && postInfo.collaborators.length > 0) {
+    // Filter out primary username from collaborators list and limit to reasonable number
+    const collabsToAdd = postInfo.collaborators
+      .filter(c => c !== primaryUsername)
+      .slice(0, 3); // Limit to 3 collaborators to avoid overly long filenames
+
+    if (collabsToAdd.length > 0) {
+      folderName += '_collab_' + collabsToAdd.join('_');
+    }
+  }
+
+  return folderName;
 }
 
-// Helper function to build base filename prefix: username_IG_POSTTYPE_YYYYMMDD_shortcode
-function buildFilePrefix(postInfo) {
-  return buildFolderName(postInfo);
+// Helper function to build base filename prefix
+function buildFilePrefix(postInfo, profileUsername = null) {
+  return buildFolderName(postInfo, profileUsername);
 }
 
 // Helper function to download data as JSON
@@ -1071,7 +1090,7 @@ chrome.runtime.onConnect.addListener((port) => {
           }
         } else if (msg.action === 'startBatch') {
           // Start batch processing
-          const { urls, skipDownloaded } = msg.data;
+          const { urls, skipDownloaded, profileUsername } = msg.data;
           batchState.queue = urls;
           batchState.currentIndex = 0;
           batchState.successCount = 0;
@@ -1080,6 +1099,7 @@ chrome.runtime.onConnect.addListener((port) => {
           batchState.isProcessing = true;
           batchState.port = port;
           batchState.skipDownloaded = skipDownloaded !== false; // Default to true
+          batchState.profileUsername = profileUsername || null; // Store profile username for collab handling
           // Reset rate limiting state for new batch
           batchState.consecutiveErrors = 0;
           batchState.last429Time = null;
@@ -1159,6 +1179,7 @@ chrome.runtime.onConnect.addListener((port) => {
             batchState.skippedCount = savedState.skippedCount;
             batchState.failedUrls = savedState.failedUrls;
             batchState.skipDownloaded = savedState.skipDownloaded;
+            batchState.profileUsername = savedState.profileUsername || null; // Restore profile username
             batchState.isProcessing = true;
             batchState.port = port;
             batchState.consecutiveErrors = 0;
@@ -1171,7 +1192,7 @@ chrome.runtime.onConnect.addListener((port) => {
             batchState.tabId = tab.id;
 
             const remaining = savedState.queue.length - savedState.currentIndex;
-            console.log('[Background] Resuming batch:', remaining, 'posts remaining');
+            console.log('[Background] Resuming batch:', remaining, 'posts remaining, profileUsername:', batchState.profileUsername);
             port.postMessage({
               type: 'batchResumed',
               data: {
@@ -1468,9 +1489,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       // Trigger download all
       if (currentData.media || currentData.comments) {
         const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
-        const username = postInfo.username || 'unknown';
-        const folderName = buildFolderName(postInfo);
-        const filePrefix = buildFilePrefix(postInfo);
+        // Use profileUsername from batch state if available (for collabs, keeps folder under profile being scraped)
+        const username = batchState.profileUsername || postInfo.username || 'unknown';
+        const folderName = buildFolderName(postInfo, batchState.profileUsername);
+        const filePrefix = buildFilePrefix(postInfo, batchState.profileUsername);
 
         // Download media
         if (currentData.media && currentData.media.media) {

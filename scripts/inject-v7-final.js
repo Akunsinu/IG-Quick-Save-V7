@@ -169,17 +169,45 @@
     };
   }
 
+  // Helper function to extract collaborator/coauthor usernames
+  function getCollaborators(post, primaryUsername) {
+    const collaborators = [];
+
+    // Check coauthor_producers (Instagram's collaboration feature)
+    if (post.coauthor_producers && Array.isArray(post.coauthor_producers)) {
+      for (const coauthor of post.coauthor_producers) {
+        if (coauthor.username && coauthor.username !== primaryUsername) {
+          collaborators.push(coauthor.username);
+        }
+      }
+    }
+
+    // Also check invited_coauthor_producers (pending collaborations)
+    if (post.invited_coauthor_producers && Array.isArray(post.invited_coauthor_producers)) {
+      for (const coauthor of post.invited_coauthor_producers) {
+        if (coauthor.username && coauthor.username !== primaryUsername && !collaborators.includes(coauthor.username)) {
+          collaborators.push(coauthor.username);
+        }
+      }
+    }
+
+    console.log('[IG DL v7] 👥 Collaborators found:', collaborators.length > 0 ? collaborators : 'none');
+    return collaborators;
+  }
+
   // Helper function to build post metadata object
   // Consolidates duplicate code from extractComments() and extractMedia()
   function buildPostInfo(post) {
     const urlType = window.location.href.includes('/reel/') ? 'reel' : 'p';
     const ownerInfo = getOwnerInfo(post);
+    const collaborators = getCollaborators(post, ownerInfo.username);
 
     return {
       username: ownerInfo.username,
       full_name: ownerInfo.full_name,
       user_id: ownerInfo.user_id,
       profile_pic_url: ownerInfo.profile_pic_url,
+      collaborators: collaborators,  // Array of collaborator usernames
       post_url: `https://www.instagram.com/${urlType}/` + post.code,
       post_type: urlType === 'reel' ? 'reel' : 'post',
       shortcode: post.code,

@@ -332,7 +332,7 @@ downloadMediaBtn.addEventListener('click', async () => {
   setTimeout(() => setButtonLoading(downloadMediaBtn, false), 2000);
 });
 
-// Helper function to build custom folder name: username_POSTTYPE_YYYYMMDD_shortcode
+// Helper function to build custom folder name: username_POSTTYPE_YYYYMMDD_shortcode[_collab_user1_user2]
 function buildFolderName(postInfo) {
   const username = postInfo.username || 'unknown';
   const postType = (postInfo.post_type || 'post').toUpperCase();
@@ -348,7 +348,21 @@ function buildFolderName(postInfo) {
     dateStr = `${year}${month}${day}`;
   }
 
-  return `${username}_${postType}_${dateStr}_${shortcode}`;
+  // Build base name
+  let folderName = `${username}_${postType}_${dateStr}_${shortcode}`;
+
+  // Add collaborators if present
+  if (postInfo.collaborators && Array.isArray(postInfo.collaborators) && postInfo.collaborators.length > 0) {
+    const collabsToAdd = postInfo.collaborators
+      .filter(c => c !== username)
+      .slice(0, 3); // Limit to 3 collaborators
+
+    if (collabsToAdd.length > 0) {
+      folderName += '_collab_' + collabsToAdd.join('_');
+    }
+  }
+
+  return folderName;
 }
 
 // Helper function to build base filename prefix
@@ -734,11 +748,15 @@ if (startBatchBtn) {
   stopBatchBtn.disabled = false;
   batchUrls.disabled = true;
 
-  // Start batch with skip option
+  // Start batch with skip option and profile username (for collab posts)
   const skipDownloaded = skipDownloadedToggle?.checked ?? true;
   port.postMessage({
     action: 'startBatch',
-    data: { urls, skipDownloaded }
+    data: {
+      urls,
+      skipDownloaded,
+      profileUsername: collectedProfileUsername // Pass profile username for collab handling
+    }
   });
 
   showStatus('info', `🚀 Starting batch download of ${urls.length} posts...`);
@@ -885,6 +903,7 @@ const profileCollectedUser = document.getElementById('profileCollectedUser');
 const downloadProfilePostsBtn = document.getElementById('downloadProfilePostsBtn');
 
 let collectedProfilePosts = [];
+let collectedProfileUsername = null; // Store the profile username for batch downloads
 
 // Handle profile scrape progress (called from init via port.onMessage)
 function handleProfileScrapeProgress(data) {
@@ -906,10 +925,11 @@ function handleProfileScrapeProgress(data) {
 function handleProfileScrapeComplete(data) {
   const { posts, count, username } = data;
 
-  // Update the global variable
+  // Update the global variables
   collectedProfilePosts = posts || [];
+  collectedProfileUsername = username || null; // Store for batch download
 
-  console.log('[Popup] Profile scrape complete, stored', collectedProfilePosts.length, 'posts');
+  console.log('[Popup] Profile scrape complete, stored', collectedProfilePosts.length, 'posts for @' + collectedProfileUsername);
 
   // Update UI
   profileScrapeProgress.classList.add('hidden');

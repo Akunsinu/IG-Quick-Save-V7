@@ -1075,7 +1075,7 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// Build filename matching extension naming convention: username_IG_POSTTYPE_YYYYMMDD_shortcode
+// Build filename matching extension naming convention: username_IG_POSTTYPE_YYYYMMDD_shortcode[_collab_user1_user2]
 function buildFilePrefix(post) {
   const username = post.username || 'unknown';
   const postType = (post.post_type || 'POST').toUpperCase();
@@ -1090,7 +1090,21 @@ function buildFilePrefix(post) {
     dateStr = `${year}${month}${day}`;
   }
 
-  return `${username}_IG_${postType}_${dateStr}_${shortcode}`;
+  // Build base name
+  let filePrefix = `${username}_IG_${postType}_${dateStr}_${shortcode}`;
+
+  // Add collaborators if present
+  if (post.collaborators && Array.isArray(post.collaborators) && post.collaborators.length > 0) {
+    const collabsToAdd = post.collaborators
+      .filter(c => c !== username)
+      .slice(0, 3); // Limit to 3 collaborators
+
+    if (collabsToAdd.length > 0) {
+      filePrefix += '_collab_' + collabsToAdd.join('_');
+    }
+  }
+
+  return filePrefix;
 }
 
 // Download current media
