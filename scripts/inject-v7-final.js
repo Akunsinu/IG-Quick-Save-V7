@@ -113,6 +113,18 @@
       post.coauthor_producers?.[0],  // For collaborative posts
     ];
 
+    // DEBUG: Log user/owner object to see if media_count is available
+    if (post.user) {
+      console.log('[IG DL v7] 🔍 post.user keys:', Object.keys(post.user));
+      console.log('[IG DL v7] 🔍 post.user.media_count:', post.user.media_count);
+      console.log('[IG DL v7] 🔍 post.user.edge_owner_to_timeline_media:', post.user.edge_owner_to_timeline_media);
+    }
+    if (post.owner) {
+      console.log('[IG DL v7] 🔍 post.owner keys:', Object.keys(post.owner));
+      console.log('[IG DL v7] 🔍 post.owner.media_count:', post.owner.media_count);
+      console.log('[IG DL v7] 🔍 post.owner.edge_owner_to_timeline_media:', post.owner.edge_owner_to_timeline_media);
+    }
+
     // Find the first source that has username (most important field)
     const owner = ownerSources.find(source => source && source.username);
 
