@@ -314,6 +314,9 @@ function buildFolderName(postInfo, profileUsername = null) {
   // Build base name
   let folderName = `${primaryUsername}_IG_${postType}_${dateStr}_${shortcode}`;
 
+  // DEBUG: Log what we received
+  console.log('[Background] buildFolderName - postInfo.collaborators:', postInfo.collaborators);
+
   // Add collaborators if present (excluding the primary username)
   if (postInfo.collaborators && Array.isArray(postInfo.collaborators) && postInfo.collaborators.length > 0) {
     // Filter out primary username from collaborators list and limit to reasonable number
@@ -321,11 +324,14 @@ function buildFolderName(postInfo, profileUsername = null) {
       .filter(c => c !== primaryUsername)
       .slice(0, 3); // Limit to 3 collaborators to avoid overly long filenames
 
+    console.log('[Background] Collaborators to add:', collabsToAdd);
+
     if (collabsToAdd.length > 0) {
       folderName += '_collab_' + collabsToAdd.join('_');
     }
   }
 
+  console.log('[Background] Final folder name:', folderName);
   return folderName;
 }
 
