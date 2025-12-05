@@ -143,6 +143,22 @@ async function init() {
     } else if (msg.type === 'profileScrapeComplete') {
       console.log('[Popup] Received profileScrapeComplete:', msg.data);
       handleProfileScrapeComplete(msg.data);
+    } else if (msg.type === 'profileChunkPause') {
+      console.log('[Popup] Received profileChunkPause:', msg.data);
+      handleProfileChunkPause(msg.data);
+    } else if (msg.type === 'profileResumed') {
+      console.log('[Popup] Received profileResumed:', msg.data);
+      handleProfileResumed(msg.data);
+    } else if (msg.type === 'profileRateLimited') {
+      console.log('[Popup] Received profileRateLimited:', msg.data);
+      handleProfileRateLimited(msg.data);
+    } else if (msg.type === 'savedProfileScrapeState') {
+      console.log('[Popup] Received savedProfileScrapeState:', msg.data);
+      handleSavedProfileScrapeState(msg.data);
+    } else if (msg.type === 'profileScrapingStateSaved') {
+      console.log('[Popup] Profile scraping state saved');
+    } else if (msg.type === 'profileScrapingStateCleared') {
+      console.log('[Popup] Profile scraping state cleared');
     } else if (msg.type === 'downloadStats') {
       // Update download history count when it changes
       if (typeof msg.data.count === 'number') {
@@ -157,6 +173,15 @@ async function init() {
     } else if (msg.type === 'urlsFilteredByTeam') {
       // Handle filtered URLs for profile download
       handleUrlsFilteredByTeam(msg.data);
+    } else if (msg.type === 'downloadSourceStats') {
+      // Handle download source stats update
+      handleDownloadSourceStats(msg.data);
+    } else if (msg.type === 'folderScanUpdated') {
+      // Folder scan completed
+      console.log('[Popup] Folder scan updated:', msg.data);
+    } else if (msg.type === 'folderScanStats') {
+      // Folder scan stats loaded
+      handleFolderScanStats(msg.data);
     }
 
     // Handle sync-related messages (defined at bottom of file)
@@ -530,6 +555,18 @@ const skipDownloadedToggle = document.getElementById('skipDownloadedToggle');
 const downloadHistoryCount = document.getElementById('downloadHistoryCount');
 const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
+// Download source elements
+const historySourceCount = document.getElementById('historySourceCount');
+const folderSourceCount = document.getElementById('folderSourceCount');
+const teamSourceCount = document.getElementById('teamSourceCount');
+const skipSourceHistory = document.getElementById('skipSourceHistory');
+const skipSourceFolder = document.getElementById('skipSourceFolder');
+const skipSourceTeam = document.getElementById('skipSourceTeam');
+const skipSourceTeamLabel = document.getElementById('skipSourceTeamLabel');
+const scanFolderBtn = document.getElementById('scanFolderBtn');
+const folderScanInfo = document.getElementById('folderScanInfo');
+const folderScanPath = document.getElementById('folderScanPath');
+
 // Resume batch elements
 const resumeBatchSection = document.getElementById('resumeBatchSection');
 const resumeBatchInfo = document.getElementById('resumeBatchInfo');
@@ -549,11 +586,19 @@ toggleBatchBtn.addEventListener('click', () => {
     toggleBatchBtn.textContent = 'Hide';
     // Check for saved batch when opening batch section
     checkForSavedBatch();
+    // Load download source stats (from background)
+    loadDownloadSourceStats();
+    // Also load folder scan stats directly from storage (more reliable)
+    loadFolderScanStatsFromStorage();
   } else {
     batchContent.classList.add('hidden');
     toggleBatchBtn.textContent = 'Show';
   }
 });
+
+// Load folder scan stats on popup open (so user sees current counts)
+// Use setTimeout to ensure function is defined and DOM elements are ready
+setTimeout(() => loadFolderScanStatsFromStorage(), 100);
 
 // Load download history count on startup
 async function loadDownloadStats() {
@@ -565,6 +610,124 @@ async function loadDownloadStats() {
   } catch (error) {
     console.log('[Popup] Error loading download stats:', error);
   }
+}
+
+// Load all download source stats
+function loadDownloadSourceStats() {
+  if (port) {
+    port.postMessage({ action: 'getDownloadSourceStats' });
+  }
+}
+
+// Extract shortcode from folder name pattern
+function extractShortcodeFromFolderName(folderName) {
+  const match = folderName.match(/_IG_(?:POST|REEL)_\d{8}_([a-zA-Z0-9_-]+?)(?:_collab_|$)/);
+  return match ? match[1] : null;
+}
+
+// Open folder scan page in a new tab (File System Access API doesn't work in popups)
+function openFolderScanPage() {
+  chrome.tabs.create({ url: chrome.runtime.getURL('folder-scan.html') });
+}
+
+// Attach folder scan button listener
+if (scanFolderBtn) {
+  scanFolderBtn.addEventListener('click', openFolderScanPage);
+}
+
+// Handle download source stats update
+function handleDownloadSourceStats(data) {
+  // Update history count
+  if (historySourceCount) {
+    historySourceCount.textContent = data.history.count;
+    downloadHistoryCount.textContent = data.history.count;
+  }
+
+  // Update folder count
+  if (folderSourceCount) {
+    folderSourceCount.textContent = data.folder.count;
+
+    // Update folder scan info
+    if (data.folder.lastScan) {
+      const scanDate = new Date(data.folder.lastScan);
+      const timeAgo = getTimeAgo(scanDate);
+      folderScanInfo.textContent = `${data.folder.count} posts (${timeAgo})`;
+
+      if (data.folder.folderPath) {
+        folderScanPath.textContent = `📂 ${data.folder.folderPath}`;
+        folderScanPath.classList.remove('hidden');
+      }
+    } else {
+      folderScanInfo.textContent = 'Not scanned';
+    }
+  }
+
+  // Update team count (show/hide based on whether team sync is enabled)
+  if (teamSourceCount && skipSourceTeamLabel) {
+    if (data.team.enabled) {
+      teamSourceCount.textContent = data.team.count;
+      skipSourceTeamLabel.classList.remove('hidden');
+    } else {
+      skipSourceTeamLabel.classList.add('hidden');
+    }
+  }
+}
+
+// Handle folder scan stats
+function handleFolderScanStats(data) {
+  if (folderSourceCount) {
+    folderSourceCount.textContent = data.count;
+  }
+  if (data.lastScan) {
+    const scanDate = new Date(data.lastScan);
+    const timeAgo = getTimeAgo(scanDate);
+    if (folderScanInfo) {
+      folderScanInfo.textContent = `${data.count} posts (${timeAgo})`;
+    }
+
+    if (data.folderPath && folderScanPath) {
+      folderScanPath.textContent = `📂 ${data.folderPath}`;
+      folderScanPath.classList.remove('hidden');
+    }
+  }
+}
+
+// Load folder scan stats directly from storage (called on popup open)
+async function loadFolderScanStatsFromStorage() {
+  try {
+    const result = await chrome.storage.local.get('folderScanCache');
+    if (result.folderScanCache) {
+      const cache = result.folderScanCache;
+      const count = cache.shortcodes?.length || 0;
+      handleFolderScanStats({
+        count: count,
+        lastScan: cache.lastScan,
+        folderPath: cache.folderPath
+      });
+      console.log('[Popup] Loaded folder scan stats from storage:', count, 'shortcodes');
+    }
+  } catch (e) {
+    console.error('[Popup] Error loading folder scan stats:', e);
+  }
+}
+
+// Helper function to format time ago
+function getTimeAgo(date) {
+  const seconds = Math.floor((new Date() - date) / 1000);
+
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+// Get current skip sources configuration
+function getSkipSources() {
+  return {
+    history: skipSourceHistory?.checked ?? true,
+    folder: skipSourceFolder?.checked ?? true,
+    team: skipSourceTeam?.checked ?? true
+  };
 }
 
 // Load stats when popup opens
@@ -750,11 +913,13 @@ if (startBatchBtn) {
 
   // Start batch with skip option and profile username (for collab posts)
   const skipDownloaded = skipDownloadedToggle?.checked ?? true;
+  const skipSources = getSkipSources();
   port.postMessage({
     action: 'startBatch',
     data: {
       urls,
       skipDownloaded,
+      skipSources,
       profileUsername: collectedProfileUsername // Pass profile username for collab handling
     }
   });
@@ -902,22 +1067,162 @@ const profileCollectedCount = document.getElementById('profileCollectedCount');
 const profileCollectedUser = document.getElementById('profileCollectedUser');
 const downloadProfilePostsBtn = document.getElementById('downloadProfilePostsBtn');
 
+// Chunk pause controls
+const profileChunkInfo = document.getElementById('profileChunkInfo');
+const profileCurrentChunk = document.getElementById('profileCurrentChunk');
+const profileTotalChunks = document.getElementById('profileTotalChunks');
+const profileChunkPauseControls = document.getElementById('profileChunkPauseControls');
+const profilePauseCountdown = document.getElementById('profilePauseCountdown');
+const profileContinueNowBtn = document.getElementById('profileContinueNowBtn');
+const profilePauseBtn = document.getElementById('profilePauseBtn');
+
+// Resume profile section
+const resumeProfileSection = document.getElementById('resumeProfileSection');
+const resumeProfileCount = document.getElementById('resumeProfileCount');
+const resumeProfileTarget = document.getElementById('resumeProfileTarget');
+const resumeProfileUsername = document.getElementById('resumeProfileUsername');
+const resumeProfileBtn = document.getElementById('resumeProfileBtn');
+const downloadCollectedBtn = document.getElementById('downloadCollectedBtn');
+const discardProfileBtn = document.getElementById('discardProfileBtn');
+
+// Rate limited section
+const profileRateLimitedSection = document.getElementById('profileRateLimitedSection');
+const rateLimitedCount = document.getElementById('rateLimitedCount');
+const downloadRateLimitedBtn = document.getElementById('downloadRateLimitedBtn');
+const discardRateLimitedBtn = document.getElementById('discardRateLimitedBtn');
+
 let collectedProfilePosts = [];
 let collectedProfileUsername = null; // Store the profile username for batch downloads
+let chunkPauseCountdownInterval = null; // For countdown timer
+let savedProfileScrapingState = null; // For resume functionality
 
 // Handle profile scrape progress (called from init via port.onMessage)
 function handleProfileScrapeProgress(data) {
-  const { count, targetCount } = data;
+  const { count, targetCount, currentChunk, totalChunks, isPaused } = data;
   profileScrapeCount.textContent = count;
+
+  // Update chunk info (check for undefined/null, not falsy since 0 is valid)
+  if (profileCurrentChunk && currentChunk !== undefined && currentChunk !== null) {
+    profileCurrentChunk.textContent = currentChunk;
+  }
+  if (profileTotalChunks && totalChunks !== undefined && totalChunks !== null) {
+    profileTotalChunks.textContent = totalChunks;
+  }
 
   if (targetCount > 0) {
     const percentage = Math.min((count / targetCount) * 100, 100);
     profileScrapeBar.style.width = percentage + '%';
-    profileScrapeStatus.textContent = `Collecting: ${count}/${targetCount} posts...`;
+    profileScrapeStatus.textContent = `Collecting: ${count}/${targetCount} posts (Chunk ${currentChunk || 1}/${totalChunks || '?'})...`;
   } else {
-    profileScrapeStatus.textContent = `Collecting: ${count} posts found...`;
+    profileScrapeStatus.textContent = `Collecting: ${count} posts found (Chunk ${currentChunk || 1}/${totalChunks || '?'})...`;
     // Indeterminate progress for "all posts"
     profileScrapeBar.style.width = '50%';
+  }
+
+  // Hide chunk pause controls when not paused
+  if (!isPaused && profileChunkPauseControls) {
+    profileChunkPauseControls.classList.add('hidden');
+    clearChunkPauseCountdown();
+  }
+}
+
+// Handle chunk pause (auto-pause between chunks)
+function handleProfileChunkPause(data) {
+  const { count, targetCount, pauseDuration, posts, username, isManualPause } = data;
+
+  // Store the posts for potential download
+  collectedProfilePosts = posts || [];
+  collectedProfileUsername = username;
+
+  // Update progress display
+  profileScrapeCount.textContent = count;
+  if (targetCount > 0) {
+    const percentage = Math.min((count / targetCount) * 100, 100);
+    profileScrapeBar.style.width = percentage + '%';
+  }
+
+  // Show chunk pause controls
+  if (profileChunkPauseControls) {
+    profileChunkPauseControls.classList.remove('hidden');
+  }
+
+  // Start countdown if auto-pause (not manual)
+  if (!isManualPause && pauseDuration > 0) {
+    startChunkPauseCountdown(pauseDuration / 1000);
+    profileScrapeStatus.textContent = `Pausing to avoid rate limit...`;
+  } else {
+    profileScrapeStatus.textContent = `Paused - ${count} posts collected`;
+    if (profilePauseCountdown) {
+      profilePauseCountdown.textContent = '∞';
+    }
+  }
+
+  showStatus('info', `⏸️ Paused at ${count} posts. Cooling down...`);
+}
+
+// Handle rate limited (403/429)
+function handleProfileRateLimited(data) {
+  const { count, targetCount, posts, username, errorStatus } = data;
+
+  // Store the posts
+  collectedProfilePosts = posts || [];
+  collectedProfileUsername = username;
+
+  // Hide progress, show rate limited section
+  profileScrapeProgress.classList.add('hidden');
+  if (profileRateLimitedSection) {
+    profileRateLimitedSection.classList.remove('hidden');
+    rateLimitedCount.textContent = count;
+  }
+
+  // Re-enable buttons
+  startProfileScrapeBtn.disabled = false;
+  stopProfileScrapeBtn.disabled = true;
+  profilePostCount.disabled = false;
+
+  showStatus('error', `🚫 Rate limited (${errorStatus})! Collected ${count} posts.`);
+}
+
+// Handle profile scrape resumed
+function handleProfileResumed(data) {
+  const { count, targetCount } = data;
+
+  // Hide chunk pause controls
+  if (profileChunkPauseControls) {
+    profileChunkPauseControls.classList.add('hidden');
+  }
+  clearChunkPauseCountdown();
+
+  profileScrapeStatus.textContent = `Collecting: ${count}/${targetCount || '?'} posts...`;
+  showStatus('info', `▶️ Resumed collecting posts...`);
+}
+
+// Start countdown timer for chunk pause
+function startChunkPauseCountdown(seconds) {
+  clearChunkPauseCountdown();
+
+  let remaining = seconds;
+  if (profilePauseCountdown) {
+    profilePauseCountdown.textContent = remaining;
+  }
+
+  chunkPauseCountdownInterval = setInterval(() => {
+    remaining--;
+    if (profilePauseCountdown) {
+      profilePauseCountdown.textContent = remaining;
+    }
+
+    if (remaining <= 0) {
+      clearChunkPauseCountdown();
+    }
+  }, 1000);
+}
+
+// Clear countdown timer
+function clearChunkPauseCountdown() {
+  if (chunkPauseCountdownInterval) {
+    clearInterval(chunkPauseCountdownInterval);
+    chunkPauseCountdownInterval = null;
   }
 }
 
@@ -952,6 +1257,8 @@ toggleProfileBtn.addEventListener('click', () => {
     toggleProfileBtn.textContent = 'Hide';
     // Check profile status when section is opened
     checkProfileStatus();
+    // Also check for saved profile scrape state
+    checkSavedProfileScrape();
   } else {
     profileContent.classList.add('hidden');
     toggleProfileBtn.textContent = 'Show';
@@ -1012,6 +1319,13 @@ startProfileScrapeBtn.addEventListener('click', async () => {
   profileScrapeBar.style.width = '0%';
   profileScrapeStatus.textContent = 'Collecting posts...';
 
+  // Reset chunk info
+  if (profileCurrentChunk) profileCurrentChunk.textContent = '1';
+  if (profileTotalChunks) {
+    const totalChunks = count > 0 ? Math.ceil(count / 50) : '?';
+    profileTotalChunks.textContent = totalChunks;
+  }
+
   // Disable/enable buttons
   startProfileScrapeBtn.disabled = true;
   stopProfileScrapeBtn.disabled = false;
@@ -1019,21 +1333,33 @@ startProfileScrapeBtn.addEventListener('click', async () => {
 
   // Send command to content script
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  chrome.tabs.sendMessage(tab.id, {
-    action: 'startProfileScrape',
-    count: count
-  });
-
-  showStatus('info', `🔍 Collecting posts from profile...`);
+  try {
+    await chrome.tabs.sendMessage(tab.id, {
+      action: 'startProfileScrape',
+      count: count
+    });
+    showStatus('info', `🔍 Collecting posts from profile...`);
+  } catch (error) {
+    console.error('[Popup] Error starting profile scrape:', error);
+    showStatus('error', 'Content script not ready. Please refresh the Instagram page and try again.');
+    startProfileScrapeBtn.disabled = false;
+    stopProfileScrapeBtn.disabled = true;
+    profilePostCount.disabled = false;
+    profileScrapeProgress.classList.add('hidden');
+  }
 });
 
 // Stop profile scraping
 stopProfileScrapeBtn.addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  chrome.tabs.sendMessage(tab.id, { action: 'stopProfileScrape' });
-
-  stopProfileScrapeBtn.disabled = true;
-  profileScrapeStatus.textContent = 'Stopping...';
+  try {
+    await chrome.tabs.sendMessage(tab.id, { action: 'stopProfileScrape' });
+    stopProfileScrapeBtn.disabled = true;
+    profileScrapeStatus.textContent = 'Stopping...';
+  } catch (error) {
+    console.error('[Popup] Error stopping profile scrape:', error);
+    showStatus('error', 'Failed to stop. Please refresh the page.');
+  }
 });
 
 // Download all collected profile posts
@@ -1081,6 +1407,164 @@ downloadProfilePostsBtn.addEventListener('click', () => {
 
   showStatus('success', `✅ Added ${urls.length} posts to batch download. Click "Start Batch" to begin.`);
 });
+
+// ===== PROFILE SCRAPING CHUNK CONTROLS =====
+
+// Continue Now button (skip countdown)
+if (profileContinueNowBtn) {
+  profileContinueNowBtn.addEventListener('click', async () => {
+    clearChunkPauseCountdown();
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    try {
+      await chrome.tabs.sendMessage(tab.id, { action: 'continueNowProfileScrape' });
+      showStatus('info', '▶️ Continuing...');
+    } catch (error) {
+      console.error('[Popup] Error sending continueNow:', error);
+      showStatus('error', 'Failed to continue. Please refresh the page.');
+    }
+  });
+}
+
+// Pause button (stop auto-continue)
+if (profilePauseBtn) {
+  profilePauseBtn.addEventListener('click', async () => {
+    clearChunkPauseCountdown();
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    try {
+      await chrome.tabs.sendMessage(tab.id, { action: 'pauseProfileScrape' });
+      if (profilePauseCountdown) {
+        profilePauseCountdown.textContent = '∞';
+      }
+      showStatus('info', '⏸️ Paused. Progress saved.');
+    } catch (error) {
+      console.error('[Popup] Error sending pause:', error);
+      showStatus('error', 'Failed to pause. Please refresh the page.');
+    }
+  });
+}
+
+// ===== RESUME PROFILE SCRAPING =====
+
+// Handle saved profile scrape state (for resume functionality)
+function handleSavedProfileScrapeState(data) {
+  if (data && data.exists) {
+    savedProfileScrapingState = data;
+
+    // Show resume section
+    if (resumeProfileSection) {
+      resumeProfileSection.classList.remove('hidden');
+      resumeProfileCount.textContent = data.count;
+      resumeProfileTarget.textContent = data.targetCount || '?';
+      resumeProfileUsername.textContent = data.username || 'user';
+    }
+  } else {
+    savedProfileScrapingState = null;
+    if (resumeProfileSection) {
+      resumeProfileSection.classList.add('hidden');
+    }
+  }
+}
+
+// Check for saved profile scrape state when profile section is opened
+function checkSavedProfileScrape() {
+  if (port) {
+    port.postMessage({ action: 'checkSavedProfileScrape' });
+  }
+}
+
+// Resume profile scraping
+if (resumeProfileBtn) {
+  resumeProfileBtn.addEventListener('click', async () => {
+    if (!savedProfileScrapingState || !savedProfileScrapingState.posts) {
+      showStatus('error', 'No saved state to resume');
+      return;
+    }
+
+    // Hide resume section, show progress
+    resumeProfileSection.classList.add('hidden');
+    profileScrapeProgress.classList.remove('hidden');
+    profileScrapeComplete.classList.add('hidden');
+
+    // Set up UI
+    startProfileScrapeBtn.disabled = true;
+    stopProfileScrapeBtn.disabled = false;
+    profilePostCount.disabled = true;
+
+    // Send resume command to content script
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    chrome.tabs.sendMessage(tab.id, {
+      action: 'startProfileScrape',
+      count: savedProfileScrapingState.targetCount,
+      existingPosts: savedProfileScrapingState.posts
+    });
+
+    showStatus('info', `▶️ Resuming from ${savedProfileScrapingState.count} posts...`);
+  });
+}
+
+// Download collected posts (from resume section)
+if (downloadCollectedBtn) {
+  downloadCollectedBtn.addEventListener('click', () => {
+    if (!savedProfileScrapingState || !savedProfileScrapingState.posts) {
+      showStatus('error', 'No collected posts to download');
+      return;
+    }
+
+    // Use the saved posts
+    collectedProfilePosts = savedProfileScrapingState.posts;
+    collectedProfileUsername = savedProfileScrapingState.username;
+
+    // Trigger the download
+    downloadProfilePostsBtn.click();
+
+    // Clear saved state
+    port.postMessage({ action: 'clearProfileScrapingState' });
+    resumeProfileSection.classList.add('hidden');
+  });
+}
+
+// Discard saved profile scrape
+if (discardProfileBtn) {
+  discardProfileBtn.addEventListener('click', () => {
+    if (confirm('Discard saved profile scraping progress?')) {
+      port.postMessage({ action: 'clearProfileScrapingState' });
+      resumeProfileSection.classList.add('hidden');
+      savedProfileScrapingState = null;
+      showStatus('info', '🗑️ Saved progress discarded');
+    }
+  });
+}
+
+// ===== RATE LIMITED SECTION =====
+
+// Download collected posts (from rate limited section)
+if (downloadRateLimitedBtn) {
+  downloadRateLimitedBtn.addEventListener('click', () => {
+    if (collectedProfilePosts.length === 0) {
+      showStatus('error', 'No collected posts to download');
+      return;
+    }
+
+    // Hide rate limited section
+    profileRateLimitedSection.classList.add('hidden');
+
+    // Trigger the download
+    downloadProfilePostsBtn.click();
+
+    // Clear saved state
+    port.postMessage({ action: 'clearProfileScrapingState' });
+  });
+}
+
+// Discard rate limited posts
+if (discardRateLimitedBtn) {
+  discardRateLimitedBtn.addEventListener('click', () => {
+    profileRateLimitedSection.classList.add('hidden');
+    collectedProfilePosts = [];
+    port.postMessage({ action: 'clearProfileScrapingState' });
+    showStatus('info', '🗑️ Collected posts discarded');
+  });
+}
 
 // Open Archive Viewer button
 const openViewerBtn = document.getElementById('openViewerBtn');

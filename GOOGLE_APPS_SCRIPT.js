@@ -6,7 +6,7 @@
  *
  * 1. Create a new Google Sheet
  * 2. Add two sheets (tabs):
- *    - "Downloads" with headers: timestamp, shortcode, url, username, post_type, media_count, comment_count, caption_preview, downloader, post_date
+ *    - "Downloads" with headers: timestamp, shortcode, url, username, post_type, media_count, comment_count, caption, downloader, post_date
  *    - "Profiles" with headers: username, total_posts, downloaded_count, completion_pct, last_updated
  * 3. Go to Extensions > Apps Script
  * 4. Delete any existing code and paste this entire file
@@ -234,7 +234,7 @@ function addDownload(ss, data) {
     data.post_type || 'POST',                           // post_type
     data.media_count || 0,                              // media_count
     data.comment_count || 0,                            // comment_count
-    (data.caption || '').substring(0, 100),             // caption_preview (truncated)
+    data.caption || '',                                 // caption (full)
     data.downloader || '',                              // downloader
     data.post_date || ''                                // post_date
   ];
@@ -292,7 +292,7 @@ function addBatchDownloads(ss, downloads) {
       data.post_type || 'POST',
       data.media_count || 0,
       data.comment_count || 0,
-      (data.caption || '').substring(0, 100),
+      data.caption || '',                                            // caption (full)
       data.downloader || '',
       data.post_date || ''
     ]);

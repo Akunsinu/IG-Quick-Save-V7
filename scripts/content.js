@@ -77,7 +77,10 @@
         type: 'profileScrapeProgress',
         data: {
           count: event.data.count,
-          targetCount: event.data.targetCount
+          targetCount: event.data.targetCount,
+          currentChunk: event.data.currentChunk,
+          totalChunks: event.data.totalChunks,
+          isPaused: event.data.isPaused
         }
       });
     }
@@ -92,6 +95,59 @@
           count: event.data.count,
           username: event.data.username
         }
+      });
+    }
+
+    // Handle chunk pause
+    if (event.data.type === 'PROFILE_SCRAPE_CHUNK_PAUSE') {
+      console.log('[Content] 📤 Profile scrape chunk pause:', event.data.count, 'posts');
+      chrome.runtime.sendMessage({
+        type: 'profileChunkPause',
+        data: {
+          count: event.data.count,
+          targetCount: event.data.targetCount,
+          pauseDuration: event.data.pauseDuration,
+          posts: event.data.posts,
+          username: event.data.username,
+          isManualPause: event.data.isManualPause
+        }
+      });
+    }
+
+    // Handle resumed after chunk pause
+    if (event.data.type === 'PROFILE_SCRAPE_RESUMED') {
+      console.log('[Content] 📤 Profile scrape resumed');
+      chrome.runtime.sendMessage({
+        type: 'profileResumed',
+        data: {
+          count: event.data.count,
+          targetCount: event.data.targetCount
+        }
+      });
+    }
+
+    // Handle rate limited (403/429)
+    if (event.data.type === 'PROFILE_SCRAPE_RATE_LIMITED') {
+      console.log('[Content] 📤 Profile scrape rate limited:', event.data.errorStatus);
+      chrome.runtime.sendMessage({
+        type: 'profileRateLimited',
+        data: {
+          count: event.data.count,
+          targetCount: event.data.targetCount,
+          posts: event.data.posts,
+          username: event.data.username,
+          errorStatus: event.data.errorStatus
+        }
+      });
+    }
+
+    // Handle save state request
+    if (event.data.type === 'PROFILE_SCRAPE_SAVE_STATE') {
+      console.log('[Content] 📤 Saving profile scrape state');
+      // Forward to background script via port
+      chrome.runtime.sendMessage({
+        type: 'saveProfileScrapingState',
+        data: event.data.state
       });
     }
 
@@ -351,12 +407,13 @@
       sendResponse({ success: true });
       return false; // Sync response
     } else if (request.action === 'startProfileScrape') {
-      // Start profile scraping
-      console.log('[Content] 📩 Starting profile scrape, count:', request.count);
+      // Start profile scraping (with optional resume from existing posts)
+      console.log('[Content] 📩 Starting profile scrape, count:', request.count, 'existing:', request.existingPosts?.length || 0);
       injectProfileScraper(); // Ensure it's injected
       window.postMessage({
         type: 'START_PROFILE_SCRAPE',
-        count: request.count || 0
+        count: request.count || 0,
+        existingPosts: request.existingPosts || null
       }, '*');
       sendResponse({ success: true });
       return false;
@@ -364,6 +421,24 @@
       // Stop profile scraping
       console.log('[Content] 📩 Stopping profile scrape');
       window.postMessage({ type: 'STOP_PROFILE_SCRAPE' }, '*');
+      sendResponse({ success: true });
+      return false;
+    } else if (request.action === 'pauseProfileScrape') {
+      // Pause profile scraping (manual pause)
+      console.log('[Content] 📩 Pausing profile scrape');
+      window.postMessage({ type: 'PAUSE_PROFILE_SCRAPE' }, '*');
+      sendResponse({ success: true });
+      return false;
+    } else if (request.action === 'resumeProfileScrape') {
+      // Resume profile scraping
+      console.log('[Content] 📩 Resuming profile scrape');
+      window.postMessage({ type: 'RESUME_PROFILE_SCRAPE' }, '*');
+      sendResponse({ success: true });
+      return false;
+    } else if (request.action === 'continueNowProfileScrape') {
+      // Continue now (skip countdown)
+      console.log('[Content] 📩 Continue now profile scrape');
+      window.postMessage({ type: 'CONTINUE_NOW_PROFILE_SCRAPE' }, '*');
       sendResponse({ success: true });
       return false;
     } else if (request.action === 'getProfileStatus') {

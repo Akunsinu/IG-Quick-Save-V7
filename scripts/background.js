@@ -87,6 +87,128 @@ async function clearSavedBatchState() {
 
 // ===== Downloaded Posts Tracking =====
 
+// ===== Local Folder Scanning =====
+// Cache for folder-scanned shortcodes
+let folderScanCache = {
+  shortcodes: new Set(),
+  lastScan: null,
+  folderPath: null
+};
+
+// Extract shortcode from folder name pattern: username_IG_POSTTYPE_YYYYMMDD_shortcode[_collab_...]
+function extractShortcodeFromFolderName(folderName) {
+  // Pattern matches: anything_IG_POST/REEL_8digits_shortcode (with optional _collab_ suffix)
+  const match = folderName.match(/_IG_(?:POST|REEL)_\d{8}_([a-zA-Z0-9_-]+?)(?:_collab_|$)/);
+  return match ? match[1] : null;
+}
+
+// Get folder scan stats
+function getFolderScanStats() {
+  return {
+    count: folderScanCache.shortcodes.size,
+    lastScan: folderScanCache.lastScan,
+    folderPath: folderScanCache.folderPath
+  };
+}
+
+// Check if shortcode exists in folder scan cache
+function isInFolderScanCache(shortcode) {
+  return folderScanCache.shortcodes.has(shortcode);
+}
+
+// Update folder scan cache with scanned shortcodes
+function updateFolderScanCache(shortcodes, folderPath) {
+  folderScanCache.shortcodes = new Set(shortcodes);
+  folderScanCache.lastScan = Date.now();
+  folderScanCache.folderPath = folderPath;
+
+  // Also persist to storage for resuming
+  chrome.storage.local.set({
+    folderScanCache: {
+      shortcodes: Array.from(shortcodes),
+      lastScan: folderScanCache.lastScan,
+      folderPath: folderPath
+    }
+  });
+
+  console.log('[Background] Folder scan cache updated:', shortcodes.length, 'shortcodes from', folderPath);
+}
+
+// Load folder scan cache from storage on startup
+async function loadFolderScanCache() {
+  try {
+    const result = await chrome.storage.local.get('folderScanCache');
+    if (result.folderScanCache) {
+      folderScanCache.shortcodes = new Set(result.folderScanCache.shortcodes || []);
+      folderScanCache.lastScan = result.folderScanCache.lastScan;
+      folderScanCache.folderPath = result.folderScanCache.folderPath;
+      console.log('[Background] Loaded folder scan cache:', folderScanCache.shortcodes.size, 'shortcodes');
+    }
+  } catch (error) {
+    console.error('[Background] Error loading folder scan cache:', error);
+  }
+}
+
+// Clear folder scan cache
+async function clearFolderScanCache() {
+  folderScanCache = {
+    shortcodes: new Set(),
+    lastScan: null,
+    folderPath: null
+  };
+  await chrome.storage.local.remove('folderScanCache');
+  console.log('[Background] Folder scan cache cleared');
+}
+
+// Initialize folder scan cache on load
+loadFolderScanCache();
+
+// ===== Profile Scraping State Persistence =====
+
+// Save profile scraping state
+async function saveProfileScrapingState(state) {
+  try {
+    await chrome.storage.local.set({ savedProfileScrapingState: state });
+    console.log('[Background] Profile scraping state saved:', state.collectedPosts?.length, 'posts for', state.username);
+  } catch (error) {
+    console.error('[Background] Error saving profile scraping state:', error);
+  }
+}
+
+// Load profile scraping state
+async function loadProfileScrapingState() {
+  try {
+    const result = await chrome.storage.local.get('savedProfileScrapingState');
+    if (result.savedProfileScrapingState) {
+      const state = result.savedProfileScrapingState;
+      // Check if state is less than 24 hours old
+      const ageHours = (Date.now() - state.savedAt) / (1000 * 60 * 60);
+      if (ageHours < 24) {
+        console.log('[Background] Loaded profile scraping state:', state.collectedPosts?.length, 'posts');
+        return state;
+      } else {
+        // State is too old, clear it
+        console.log('[Background] Profile scraping state expired, clearing...');
+        await chrome.storage.local.remove('savedProfileScrapingState');
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error('[Background] Error loading profile scraping state:', error);
+    return null;
+  }
+}
+
+// Clear profile scraping state
+async function clearProfileScrapingState() {
+  try {
+    await chrome.storage.local.remove('savedProfileScrapingState');
+    console.log('[Background] Profile scraping state cleared');
+  } catch (error) {
+    console.error('[Background] Error clearing profile scraping state:', error);
+  }
+}
+
 // Get the set of downloaded shortcodes from storage
 async function getDownloadedShortcodes() {
   try {
@@ -118,10 +240,36 @@ async function markAsDownloaded(shortcode, postInfo = null) {
   }
 }
 
-// Check if a shortcode has been downloaded
-async function isAlreadyDownloaded(shortcode) {
-  const downloaded = await getDownloadedShortcodes();
-  return downloaded.has(shortcode);
+// Check if a shortcode has been downloaded (checks all sources: history, folder scan, team sync)
+async function isAlreadyDownloaded(shortcode, checkSources = { history: true, folder: true, team: true }) {
+  // Check extension download history
+  if (checkSources.history) {
+    const downloaded = await getDownloadedShortcodes();
+    if (downloaded.has(shortcode)) {
+      return { downloaded: true, source: 'history' };
+    }
+  }
+
+  // Check folder scan cache
+  if (checkSources.folder && isInFolderScanCache(shortcode)) {
+    return { downloaded: true, source: 'folder' };
+  }
+
+  // Check team sync (Google Sheets)
+  if (checkSources.team && typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+    const teamRecord = SheetsSync.isDownloaded(shortcode);
+    if (teamRecord) {
+      return { downloaded: true, source: 'team', record: teamRecord };
+    }
+  }
+
+  return { downloaded: false };
+}
+
+// Simple boolean check for backwards compatibility
+async function isAlreadyDownloadedSimple(shortcode) {
+  const result = await isAlreadyDownloaded(shortcode);
+  return result.downloaded;
 }
 
 // Extract shortcode from Instagram URL
@@ -152,7 +300,7 @@ async function clearDownloadHistory() {
 
 // Listen for messages from content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  console.log('[Background] Received message:', message.type);
+  console.log('[Background] Received message:', message.type || message.action);
 
   if (message.type === 'POST_DATA_RESPONSE') {
     currentData.postData = message.data;
@@ -189,6 +337,76 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     } else {
       console.warn('[Background] No activePopupPort to forward profileScrapeComplete!');
     }
+  } else if (message.type === 'profileChunkPause') {
+    // Forward chunk pause to popup
+    console.log('[Background] Profile chunk pause received, posts:', message.data?.count);
+    if (activePopupPort) {
+      activePopupPort.postMessage({
+        type: 'profileChunkPause',
+        data: message.data
+      });
+    }
+    // Also save state to storage
+    if (message.data) {
+      saveProfileScrapingState({
+        collectedPosts: message.data.posts,
+        username: message.data.username,
+        targetCount: message.data.targetCount,
+        savedAt: Date.now()
+      });
+    }
+  } else if (message.type === 'profileResumed') {
+    // Forward resumed to popup
+    console.log('[Background] Profile resumed');
+    if (activePopupPort) {
+      activePopupPort.postMessage({
+        type: 'profileResumed',
+        data: message.data
+      });
+    }
+  } else if (message.type === 'profileRateLimited') {
+    // Forward rate limited to popup
+    console.log('[Background] Profile rate limited:', message.data?.errorStatus);
+    if (activePopupPort) {
+      activePopupPort.postMessage({
+        type: 'profileRateLimited',
+        data: message.data
+      });
+    }
+    // Also save state to storage
+    if (message.data) {
+      saveProfileScrapingState({
+        collectedPosts: message.data.posts,
+        username: message.data.username,
+        targetCount: message.data.targetCount,
+        savedAt: Date.now()
+      });
+    }
+  } else if (message.type === 'folderScanComplete') {
+    // Update in-memory folder scan cache from folder-scan.js
+    console.log('[Background] Folder scan complete, updating cache:', message.data?.shortcodes?.length, 'shortcodes');
+    if (message.data) {
+      updateFolderScanCache(message.data.shortcodes || [], message.data.folderPath);
+    }
+  } else if (message.type === 'saveProfileScrapingState') {
+    // Save profile scraping state
+    console.log('[Background] Saving profile scraping state');
+    if (message.data) {
+      saveProfileScrapingState(message.data);
+    }
+  }
+
+  // Handle action-based messages (from popup's chrome.runtime.sendMessage)
+  if (message.action === 'getDownloadStats') {
+    getDownloadStats().then(stats => {
+      sendResponse({ count: stats.totalDownloaded });
+    });
+    return true; // Keep channel open for async response
+  } else if (message.action === 'clearDownloadHistory') {
+    clearDownloadHistory().then(success => {
+      sendResponse({ success });
+    });
+    return true;
   }
 
   return true;
@@ -1096,7 +1314,7 @@ chrome.runtime.onConnect.addListener((port) => {
           }
         } else if (msg.action === 'startBatch') {
           // Start batch processing
-          const { urls, skipDownloaded, profileUsername } = msg.data;
+          const { urls, skipDownloaded, profileUsername, skipSources } = msg.data;
           batchState.queue = urls;
           batchState.currentIndex = 0;
           batchState.successCount = 0;
@@ -1106,6 +1324,8 @@ chrome.runtime.onConnect.addListener((port) => {
           batchState.port = port;
           batchState.skipDownloaded = skipDownloaded !== false; // Default to true
           batchState.profileUsername = profileUsername || null; // Store profile username for collab handling
+          // Skip sources configuration (history, folder, team)
+          batchState.skipSources = skipSources || { history: true, folder: true, team: true };
           // Reset rate limiting state for new batch
           batchState.consecutiveErrors = 0;
           batchState.last429Time = null;
@@ -1315,6 +1535,107 @@ chrome.runtime.onConnect.addListener((port) => {
           const { shortcode } = msg.data;
           const record = SheetsSync.isDownloadedByOthers(shortcode);
           port.postMessage({ type: 'teamDownloadedCheck', data: { downloaded: !!record, record } });
+
+        // ===== LOCAL FOLDER SCANNING HANDLERS =====
+
+        } else if (msg.action === 'updateFolderScan') {
+          // Update folder scan cache with results from popup's File System Access API scan
+          const { shortcodes, folderPath } = msg.data;
+          updateFolderScanCache(shortcodes, folderPath);
+          port.postMessage({
+            type: 'folderScanUpdated',
+            data: {
+              success: true,
+              count: shortcodes.length,
+              folderPath: folderPath
+            }
+          });
+
+        } else if (msg.action === 'getFolderScanStats') {
+          // Get folder scan statistics
+          const stats = getFolderScanStats();
+          port.postMessage({ type: 'folderScanStats', data: stats });
+
+        } else if (msg.action === 'clearFolderScanCache') {
+          // Clear folder scan cache
+          await clearFolderScanCache();
+          port.postMessage({ type: 'folderScanCacheCleared', data: { success: true } });
+
+        } else if (msg.action === 'getDownloadSourceStats') {
+          // Get combined stats from all download tracking sources
+          const historyShortcodes = await getDownloadedShortcodes();
+          const folderStats = getFolderScanStats();
+          const teamCount = (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled)
+            ? SheetsSync.cache?.downloads?.size || 0
+            : 0;
+
+          port.postMessage({
+            type: 'downloadSourceStats',
+            data: {
+              history: {
+                count: historyShortcodes.size,
+                label: 'Session History'
+              },
+              folder: {
+                count: folderStats.count,
+                lastScan: folderStats.lastScan,
+                folderPath: folderStats.folderPath,
+                label: 'Local Folder'
+              },
+              team: {
+                count: teamCount,
+                enabled: typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled,
+                label: 'Team Sync'
+              }
+            }
+          });
+
+        } else if (msg.action === 'checkDownloadedAllSources') {
+          // Check if shortcodes are downloaded across all sources
+          const { shortcodes } = msg.data;
+          const results = {};
+
+          for (const shortcode of shortcodes) {
+            const check = await isAlreadyDownloaded(shortcode);
+            results[shortcode] = check;
+          }
+
+          port.postMessage({
+            type: 'downloadedCheckAllSources',
+            data: results
+          });
+
+        // ===== PROFILE SCRAPING STATE HANDLERS =====
+
+        } else if (msg.action === 'saveProfileScrapingState') {
+          // Save profile scraping state (from content script)
+          await saveProfileScrapingState(msg.data);
+          port.postMessage({ type: 'profileScrapingStateSaved', data: { success: true } });
+
+        } else if (msg.action === 'loadProfileScrapingState') {
+          // Load saved profile scraping state
+          const state = await loadProfileScrapingState();
+          port.postMessage({ type: 'profileScrapingStateLoaded', data: state });
+
+        } else if (msg.action === 'clearProfileScrapingState') {
+          // Clear profile scraping state
+          await clearProfileScrapingState();
+          port.postMessage({ type: 'profileScrapingStateCleared', data: { success: true } });
+
+        } else if (msg.action === 'checkSavedProfileScrape') {
+          // Check if there's a saved profile scrape for resuming
+          const state = await loadProfileScrapingState();
+          port.postMessage({
+            type: 'savedProfileScrapeState',
+            data: state ? {
+              exists: true,
+              username: state.username,
+              count: state.collectedPosts?.length || 0,
+              targetCount: state.targetCount,
+              savedAt: state.savedAt,
+              posts: state.collectedPosts
+            } : { exists: false }
+          });
         }
       } catch (error) {
         console.error('[Background] Error:', error);
@@ -1369,13 +1690,17 @@ async function processNextBatchUrl() {
 
   // Check if already downloaded (if skip option is enabled)
   if (batchState.skipDownloaded && shortcode) {
-    const alreadyDownloaded = await isAlreadyDownloaded(shortcode);
-    if (alreadyDownloaded) {
-      console.log('[Background] ⏭️ Skipping already downloaded:', shortcode);
+    const downloadCheck = await isAlreadyDownloaded(shortcode, {
+      history: batchState.skipSources?.history !== false,
+      folder: batchState.skipSources?.folder !== false,
+      team: batchState.skipSources?.team !== false
+    });
+    if (downloadCheck.downloaded) {
+      console.log('[Background] ⏭️ Skipping already downloaded:', shortcode, '(source:', downloadCheck.source + ')');
       batchState.skippedCount++;
       batchState.currentIndex++;
 
-      // Send progress update
+      // Send progress update with source info
       if (batchState.port) {
         batchState.port.postMessage({
           type: 'batchProgress',
@@ -1386,7 +1711,8 @@ async function processNextBatchUrl() {
             successCount: batchState.successCount,
             skippedCount: batchState.skippedCount,
             failedUrls: batchState.failedUrls,
-            skipped: true
+            skipped: true,
+            skipSource: downloadCheck.source
           }
         });
       }

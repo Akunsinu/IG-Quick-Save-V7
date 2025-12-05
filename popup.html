@@ -371,9 +371,65 @@
             </div>
             <div style="font-size: 11px; color: #1976d2; margin-bottom: 4px;">
               Found: <span id="profileScrapeCount">0</span> posts
+              <span id="profileChunkInfo" style="margin-left: 8px;">(Chunk <span id="profileCurrentChunk">1</span>/<span id="profileTotalChunks">?</span>)</span>
             </div>
             <div style="width: 100%; height: 6px; background: #bbdefb; border-radius: 3px; overflow: hidden;">
               <div id="profileScrapeBar" style="width: 0%; height: 100%; background: #1976d2; transition: width 0.3s;"></div>
+            </div>
+
+            <!-- Chunk pause controls (shown during auto-pause) -->
+            <div id="profileChunkPauseControls" class="hidden" style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed #90caf9;">
+              <div style="font-size: 11px; color: #f57c00; font-weight: 600; margin-bottom: 6px;">
+                ⏸️ Cooling down... <span id="profilePauseCountdown">30</span>s
+              </div>
+              <div class="button-group" style="gap: 6px;">
+                <button id="profileContinueNowBtn" class="secondary" style="font-size: 10px; padding: 4px 8px;">
+                  ▶️ Continue Now
+                </button>
+                <button id="profilePauseBtn" class="secondary" style="font-size: 10px; padding: 4px 8px;">
+                  ⏸️ Pause
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Resume profile scraping section (shown when saved state exists) -->
+          <div id="resumeProfileSection" class="hidden" style="margin-bottom: 12px; padding: 12px; background: #fff3e0; border-radius: 8px;">
+            <div style="font-size: 12px; font-weight: 600; color: #f57c00; margin-bottom: 8px;">
+              ⏸️ Paused Profile Scrape
+            </div>
+            <div style="font-size: 11px; color: #795548; margin-bottom: 8px;">
+              <span id="resumeProfileCount">0</span>/<span id="resumeProfileTarget">0</span> posts collected for @<span id="resumeProfileUsername">user</span>
+            </div>
+            <div class="button-group" style="gap: 6px;">
+              <button id="resumeProfileBtn" class="primary" style="font-size: 11px; padding: 6px 10px;">
+                ▶️ Resume
+              </button>
+              <button id="downloadCollectedBtn" class="secondary" style="font-size: 11px; padding: 6px 10px;">
+                💾 Download Collected
+              </button>
+              <button id="discardProfileBtn" class="secondary" style="font-size: 11px; padding: 6px 10px;">
+                🗑️ Discard
+              </button>
+            </div>
+          </div>
+
+          <!-- Rate limited warning (shown on 403/429) -->
+          <div id="profileRateLimitedSection" class="hidden" style="margin-bottom: 12px; padding: 12px; background: #ffebee; border-radius: 8px;">
+            <div style="font-size: 12px; font-weight: 600; color: #c62828; margin-bottom: 8px;">
+              🚫 Rate Limited by Instagram
+            </div>
+            <div style="font-size: 11px; color: #795548; margin-bottom: 8px;">
+              Collected <span id="rateLimitedCount">0</span> posts before being rate limited.
+              You can download what was collected, or wait and try again later.
+            </div>
+            <div class="button-group" style="gap: 6px;">
+              <button id="downloadRateLimitedBtn" class="primary" style="font-size: 11px; padding: 6px 10px;">
+                💾 Download Collected
+              </button>
+              <button id="discardRateLimitedBtn" class="secondary" style="font-size: 11px; padding: 6px 10px;">
+                🗑️ Discard
+              </button>
             </div>
           </div>
 
@@ -433,6 +489,36 @@
           <div style="font-size: 11px; color: #8e8e8e; margin-top: 6px; margin-left: 24px;">
             <span id="downloadHistoryCount">0</span> posts in download history
             <button id="clearHistoryBtn" style="background: none; border: none; color: #0095f6; cursor: pointer; font-size: 11px; padding: 0; margin-left: 8px;">Clear</button>
+          </div>
+
+          <!-- Download Source Stats -->
+          <div id="downloadSourceStats" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #dbdbdb;">
+            <div style="font-size: 11px; font-weight: 600; color: #8e8e8e; margin-bottom: 6px;">Skip sources:</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; font-size: 10px;">
+              <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                <input type="checkbox" id="skipSourceHistory" checked style="width: 12px; height: 12px;">
+                <span>History (<span id="historySourceCount">0</span>)</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                <input type="checkbox" id="skipSourceFolder" checked style="width: 12px; height: 12px;">
+                <span>Folder (<span id="folderSourceCount">0</span>)</span>
+              </label>
+              <label id="skipSourceTeamLabel" style="display: flex; align-items: center; gap: 4px; cursor: pointer;" class="hidden">
+                <input type="checkbox" id="skipSourceTeam" checked style="width: 12px; height: 12px;">
+                <span>Team (<span id="teamSourceCount">0</span>)</span>
+              </label>
+            </div>
+
+            <!-- Folder Scan Controls -->
+            <div style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed #e0e0e0;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <button id="scanFolderBtn" class="secondary" style="font-size: 10px; padding: 4px 8px;">
+                  📁 Scan Folder
+                </button>
+                <span id="folderScanInfo" style="font-size: 10px; color: #8e8e8e;">Not scanned</span>
+              </div>
+              <div id="folderScanPath" style="font-size: 9px; color: #b0b0b0; margin-top: 4px; word-break: break-all;" class="hidden"></div>
+            </div>
           </div>
         </div>
 

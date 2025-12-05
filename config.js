@@ -59,6 +59,15 @@ const CONFIG = {
       MAX_429_RETRIES: 3,                     // Max times to retry after 429 before stopping
       BACKOFF_MULTIPLIER: 2,                  // Double the pause each time
     },
+
+    // Profile scraping (collecting post URLs from profiles)
+    PROFILE_SCRAPING: {
+      POSTS_PER_CHUNK: 50,                    // Pause every 50 posts to avoid rate limiting
+      CHUNK_PAUSE_MS: 30000,                  // 30 second pause between chunks (auto-continue)
+      SCROLL_DELAY_MS: 1500,                  // Delay between scroll attempts (ms)
+      MAX_NO_NEW_POSTS_ATTEMPTS: 5,           // Stop after this many attempts with no new posts
+      STATE_EXPIRY_HOURS: 24,                 // Saved scraping state expires after 24 hours
+    },
   },
 
   // ============================================================================
