@@ -1160,11 +1160,17 @@
       padding: 0 12px 12px;
     }
 
-    .screenshot-likes {
+    .screenshot-stats {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 6px;
+    }
+
+    .screenshot-likes,
+    .screenshot-comments {
       font-weight: 600;
       font-size: 14px;
       color: #262626;
-      margin-bottom: 6px;
     }
 
     .screenshot-caption {
@@ -1301,7 +1307,6 @@
         <button class="active" data-view="grid">Grid</button>
         <button data-view="feed">Feed</button>
       </div>
-      <button class="header-btn" id="exportAllScreenshotsBtn" title="Export all posts as screenshots">📸 Export All Screenshots</button>
       <button class="select-folder-btn" id="selectFolderBtn">Select Folder</button>
       <button class="theme-toggle-btn" id="themeToggle" title="Toggle theme">🌙</button>
     </div>
@@ -1395,6 +1400,7 @@
         <div class="modal-actions">
           <button class="modal-action-btn" id="downloadMediaBtn" title="Download media">⬇️ Download</button>
           <button class="modal-action-btn" id="screenshotBtn" title="Export screenshot">📸 Screenshot</button>
+          <button class="modal-action-btn" id="exportAllCommentsBtn" title="Export all comments as screenshots" style="display: none;">💬 Export Comments</button>
         </div>
       </div>
       <div class="modal-sidebar">

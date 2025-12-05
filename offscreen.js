@@ -24,6 +24,9 @@ function formatNumber(num) {
   return num.toString();
 }
 
+// Track blob URLs for cleanup
+const activeBlobUrls = new Map();
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CROP_SCREENSHOT') {
     cropScreenshot(message.dataUrl, message.cropLeft, message.cropBottom)
@@ -47,6 +50,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ success: false, error: error.message });
       });
     return true; // Keep channel open for async response
+  }
+
+  // Create Blob URL for large data (JSON/CSV) - avoids data URL size limits
+  if (message.type === 'CREATE_BLOB_URL') {
+    try {
+      const { data, mimeType, id } = message;
+      const blob = new Blob([data], { type: mimeType });
+      const blobUrl = URL.createObjectURL(blob);
+
+      // Track for cleanup
+      activeBlobUrls.set(id, blobUrl);
+
+      console.log('[Offscreen] Created blob URL for', id, 'size:', data.length);
+      sendResponse({ success: true, blobUrl: blobUrl, id: id });
+    } catch (error) {
+      console.error('[Offscreen] Error creating blob URL:', error);
+      sendResponse({ success: false, error: error.message });
+    }
+    return true;
+  }
+
+  // Revoke Blob URL after download completes
+  if (message.type === 'REVOKE_BLOB_URL') {
+    try {
+      const { id, blobUrl } = message;
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl);
+      }
+      if (id && activeBlobUrls.has(id)) {
+        URL.revokeObjectURL(activeBlobUrls.get(id));
+        activeBlobUrls.delete(id);
+      }
+      console.log('[Offscreen] Revoked blob URL for', id || blobUrl);
+      sendResponse({ success: true });
+    } catch (error) {
+      console.error('[Offscreen] Error revoking blob URL:', error);
+      sendResponse({ success: false, error: error.message });
+    }
+    return true;
   }
 });
 
@@ -106,6 +148,7 @@ async function renderInstagramScreenshot(postData, mediaDataUrl, avatarDataUrl) 
       const initial = username.charAt(0).toUpperCase();
       const caption = postData.caption || '';
       const likeCount = postData.like_count || 0;
+      const commentCount = postData.comment_count || 0;
 
       // Format date
       let formattedDate = '';
@@ -141,7 +184,10 @@ async function renderInstagramScreenshot(postData, mediaDataUrl, avatarDataUrl) 
             </div>
           </div>
           <div class="screenshot-footer">
-            <div class="screenshot-likes">${formatNumber(likeCount)} likes</div>
+            <div class="screenshot-stats">
+              <span class="screenshot-likes">${formatNumber(likeCount)} likes</span>
+              <span class="screenshot-comments">${formatNumber(commentCount)} comments</span>
+            </div>
             ${caption ? `
               <div class="screenshot-caption">
                 <strong>${escapeHtml(username)}</strong> ${escapeHtml(caption)}

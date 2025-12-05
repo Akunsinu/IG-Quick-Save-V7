@@ -131,7 +131,6 @@ async function selectFolder() {
       viewToggle.classList.remove('hidden');
       updateStats();
       renderPosts();
-      showExportAllButton();
     } else {
       welcomeScreen.classList.remove('hidden');
       alert('No Instagram posts found in this folder.\n\nMake sure you selected a folder containing posts downloaded with IG Quick Save.\n\nExpected structure:\nInstagram/\n  username_POST_date_code/\n    *_metadata.json\n    media/\n    comments/');
@@ -167,7 +166,6 @@ async function handleFileSelect(event) {
       viewToggle.classList.remove('hidden');
       updateStats();
       renderPosts();
-      showExportAllButton();
     } else {
       welcomeScreen.classList.remove('hidden');
       alert('No Instagram posts found in the selected files.\n\nMake sure you selected files from a folder containing posts downloaded with IG Quick Save.');
@@ -843,6 +841,9 @@ function openModal(postIndex) {
 
   modalOverlay.classList.add('active');
   document.body.style.overflow = 'hidden';
+
+  // Show/hide export comments button based on whether post has comments
+  showExportCommentsButton();
 }
 
 // Update modal media
@@ -931,7 +932,11 @@ function renderCommentWithId(comment, avatars = {}, index, parentIndex = '') {
   const date = comment.created_at ? new Date(comment.created_at * 1000).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric'
   }) : '';
-  const commentUsername = comment.owner?.username || 'Unknown';
+  // Try multiple paths since comment structure can vary between API versions
+  const commentUsername = comment.owner?.username ||
+                          comment.user?.username ||
+                          comment.username ||
+                          'Unknown';
   const commentId = parentIndex ? `${parentIndex}-${index}` : `${index}`;
   const commentText = comment.text || '';
   const likeCount = comment.like_count || 0;
@@ -1179,7 +1184,10 @@ function createScreenshotContainer(post, media, videoFrameDataUrl = null) {
         </div>
       </div>
       <div class="screenshot-footer">
-        <div class="screenshot-likes">${formatNumber(post.like_count || 0)} likes</div>
+        <div class="screenshot-stats">
+          <span class="screenshot-likes">${formatNumber(post.like_count || 0)} likes</span>
+          <span class="screenshot-comments">${formatNumber(post.comment_count || post.comments?.length || 0)} comments</span>
+        </div>
         ${caption ? `
           <div class="screenshot-caption">
             <strong>${escapeHtml(username)}</strong> ${escapeHtml(caption)}
@@ -1322,123 +1330,297 @@ async function exportScreenshot() {
 // Screenshot button event listener
 document.getElementById('screenshotBtn')?.addEventListener('click', exportScreenshot);
 
-// Export all screenshots button
-const exportAllScreenshotsBtn = document.getElementById('exportAllScreenshotsBtn');
+// Export all comments button
+const exportAllCommentsBtn = document.getElementById('exportAllCommentsBtn');
 
-// Show export all button when posts are loaded
-function showExportAllButton() {
-  if (exportAllScreenshotsBtn && posts.length > 0) {
-    exportAllScreenshotsBtn.classList.add('visible');
+// Show export all comments button when a post with comments is viewed
+function showExportCommentsButton() {
+  const post = posts[currentPostIndex];
+  if (exportAllCommentsBtn && post?.comments?.length > 0) {
+    exportAllCommentsBtn.style.display = 'inline-flex';
+  } else if (exportAllCommentsBtn) {
+    exportAllCommentsBtn.style.display = 'none';
   }
 }
 
-// Export all posts as screenshots
-async function exportAllScreenshots() {
-  if (posts.length === 0) {
-    alert('No posts to export');
+// Pre-fetch and cache an avatar as base64
+async function prefetchAvatarAsBase64(url, timeout = 5000) {
+  if (!url || url.startsWith('data:')) {
+    return url; // Already base64 or empty
+  }
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+
+    const timer = setTimeout(() => {
+      img.src = '';
+      resolve(null);
+    }, timeout);
+
+    img.onload = () => {
+      clearTimeout(timer);
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.naturalWidth || 150;
+        canvas.height = img.naturalHeight || 150;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const base64 = canvas.toDataURL('image/jpeg', 0.8);
+        resolve(base64);
+      } catch (e) {
+        console.warn('[Avatar Prefetch] Canvas conversion failed:', e);
+        resolve(null);
+      }
+    };
+
+    img.onerror = () => {
+      clearTimeout(timer);
+      resolve(null);
+    };
+
+    img.src = url;
+  });
+}
+
+// Export all comments as screenshots to organized folder
+async function exportAllComments() {
+  const post = posts[currentPostIndex];
+  if (!post || !post.comments || post.comments.length === 0) {
+    alert('No comments to export. Please open a post with comments first.');
     return;
   }
 
-  const btn = exportAllScreenshotsBtn;
+  const btn = exportAllCommentsBtn;
   const originalText = btn.textContent;
   btn.disabled = true;
 
   try {
-    const totalPosts = posts.length;
+    // Flatten all comments including replies
+    const allComments = [];
+    function collectComments(comments, depth = 0) {
+      for (const comment of comments) {
+        allComments.push({ comment, depth });
+        if (comment.replies && comment.replies.length > 0) {
+          collectComments(comment.replies, depth + 1);
+        }
+      }
+    }
+    collectComments(post.comments);
+
+    const totalComments = allComments.length;
     let successCount = 0;
     let failCount = 0;
 
-    for (let i = 0; i < totalPosts; i++) {
-      const post = posts[i];
-      const media = post.media[0]; // Use first media for screenshot
+    // Build folder path: Instagram/{username}/{folderName}/comments/screenshots/
+    const username = post.username || 'unknown';
+    const folderName = buildFilePrefix(post);
+    const basePath = `Instagram/${username}/${folderName}/comments/screenshots`;
 
-      // Update button with progress
-      btn.textContent = `📸 Exporting ${i + 1}/${totalPosts}...`;
+    // Initialize avatar cache from post.avatars (already base64)
+    const avatarCache = { ...(post.avatars || {}) };
 
-      if (!media) {
-        failCount++;
-        continue;
+    // Collect unique avatar URLs that need fetching
+    const avatarsToFetch = new Map();
+    for (const { comment } of allComments) {
+      const commenter = comment.owner?.username ||
+                        comment.user?.username ||
+                        comment.username ||
+                        'unknown';
+
+      if (!avatarCache[commenter]) {
+        const avatarUrl = comment.owner?.profile_pic_url ||
+                          comment.user?.profile_pic_url ||
+                          comment.profile_pic_url;
+        if (avatarUrl && !avatarUrl.startsWith('data:')) {
+          avatarsToFetch.set(commenter, avatarUrl);
+        }
       }
+    }
 
-      try {
-        // For videos, capture a frame first
-        let videoFrameDataUrl = null;
-        if (media.type === 'video') {
-          try {
-            videoFrameDataUrl = await captureVideoFrame(media.url);
-          } catch (videoError) {
-            console.warn('Could not capture video frame for post', i, videoError);
+    // Pre-fetch avatars in batches to avoid overwhelming the browser
+    const AVATAR_BATCH_SIZE = 50;
+    const avatarEntries = Array.from(avatarsToFetch.entries());
+    const totalAvatarsToFetch = avatarEntries.length;
+
+    if (totalAvatarsToFetch > 0) {
+      console.log(`[Export Comments] Pre-fetching ${totalAvatarsToFetch} avatars...`);
+      btn.textContent = `💬 Loading avatars 0/${totalAvatarsToFetch}...`;
+
+      for (let i = 0; i < avatarEntries.length; i += AVATAR_BATCH_SIZE) {
+        const batch = avatarEntries.slice(i, i + AVATAR_BATCH_SIZE);
+        btn.textContent = `💬 Loading avatars ${Math.min(i + AVATAR_BATCH_SIZE, totalAvatarsToFetch)}/${totalAvatarsToFetch}...`;
+
+        // Fetch batch in parallel
+        const results = await Promise.all(
+          batch.map(async ([commenter, url]) => {
+            const base64 = await prefetchAvatarAsBase64(url);
+            return [commenter, base64];
+          })
+        );
+
+        // Store results in cache
+        for (const [commenter, base64] of results) {
+          if (base64) {
+            avatarCache[commenter] = base64;
           }
         }
 
-        // Create screenshot container
-        const container = createScreenshotContainer(post, media, videoFrameDataUrl);
+        // Small delay between batches to let browser breathe
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      console.log(`[Export Comments] Avatar prefetch complete. Cached ${Object.keys(avatarCache).length} avatars.`);
+    }
+
+    // Process comments in batches to prevent memory issues
+    const COMMENT_BATCH_SIZE = 100;
+
+    for (let i = 0; i < totalComments; i++) {
+      const { comment } = allComments[i];
+      const commenter = comment.owner?.username ||
+                        comment.user?.username ||
+                        comment.username ||
+                        'unknown';
+
+      // Debug: log comment structure for first few comments
+      if (i < 3) {
+        console.log(`[Export Comments] Comment ${i + 1}:`, {
+          'resolved commenter': commenter,
+          'has cached avatar': !!avatarCache[commenter]
+        });
+      }
+
+      // Update button with progress
+      btn.textContent = `💬 Exporting ${i + 1}/${totalComments}...`;
+
+      try {
+        // Create a temporary comment element for screenshot
+        // Pass the avatar cache to use pre-fetched base64 avatars
+        const tempCommentEl = createTempCommentElement(comment, post, avatarCache);
+
+        // Create screenshot container using existing function
+        const container = createCommentScreenshotContainer(tempCommentEl, post, avatarCache);
         document.body.appendChild(container);
 
-        // Wait for images to load
-        const images = container.querySelectorAll('img');
-        await Promise.all(Array.from(images).map(img => {
+        // Wait for any images to load (should be instant since base64)
+        const imgs = container.querySelectorAll('img');
+        await Promise.all(Array.from(imgs).map(img => {
           if (img.complete) return Promise.resolve();
-          return new Promise((resolve) => {
+          return new Promise(resolve => {
             img.onload = resolve;
             img.onerror = resolve;
           });
         }));
 
         // Small delay for rendering
-        await new Promise(resolve => setTimeout(resolve, 150));
+        await new Promise(resolve => setTimeout(resolve, 50));
 
         // Capture with html2canvas
-        const screenshotPost = container.querySelector('.screenshot-post');
-        const canvas = await html2canvas(screenshotPost, {
+        const screenshotComment = container.querySelector('.screenshot-comment');
+        const canvas = await html2canvas(screenshotComment, {
           backgroundColor: '#ffffff',
           scale: 2,
           useCORS: true,
           allowTaint: true
         });
 
-        // Download
-        const link = document.createElement('a');
-        const filePrefix = buildFilePrefix(post);
-        link.download = `${filePrefix}_screenshot.png`;
-        link.href = canvas.toDataURL('image/png');
-        link.click();
+        // Build filename
+        const filename = `${basePath}/${folderName}_comment_${i + 1}_${commenter}.png`;
+        const dataUrl = canvas.toDataURL('image/png');
+
+        // Download using chrome.downloads API for folder path support
+        await new Promise((resolve, reject) => {
+          chrome.runtime.sendMessage({
+            action: 'downloadCommentScreenshot',
+            dataUrl: dataUrl,
+            filename: filename
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              reject(chrome.runtime.lastError);
+            } else {
+              resolve(response);
+            }
+          });
+        });
 
         // Cleanup
         document.body.removeChild(container);
 
         successCount++;
 
-        // Small delay between downloads to avoid overwhelming the browser
-        await new Promise(resolve => setTimeout(resolve, 300));
+        // Small delay between downloads
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // Pause briefly every batch to let browser garbage collect
+        if ((i + 1) % COMMENT_BATCH_SIZE === 0) {
+          console.log(`[Export Comments] Completed batch ${Math.floor((i + 1) / COMMENT_BATCH_SIZE)}, pausing for GC...`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
 
       } catch (error) {
-        console.error(`Failed to export screenshot for post ${i + 1}:`, error);
+        console.error(`Failed to export comment ${i + 1}:`, error);
         failCount++;
       }
     }
 
     // Show completion message
     if (failCount === 0) {
-      alert(`Successfully exported ${successCount} screenshots!`);
+      alert(`Successfully exported ${successCount} comment screenshots to:\n${basePath}`);
     } else {
-      alert(`Exported ${successCount} screenshots.\n${failCount} posts failed.`);
+      alert(`Exported ${successCount} comment screenshots.\n${failCount} failed.\n\nSaved to: ${basePath}`);
     }
 
   } catch (error) {
-    console.error('Export all screenshots failed:', error);
-    alert('Failed to export screenshots: ' + error.message);
+    console.error('Export all comments failed:', error);
+    alert('Failed to export comments: ' + error.message);
   } finally {
     btn.textContent = originalText;
     btn.disabled = false;
   }
 }
 
-// Export all screenshots button event listener
-exportAllScreenshotsBtn?.addEventListener('click', exportAllScreenshots);
+// Create a temporary comment element with required data attributes for screenshot
+function createTempCommentElement(comment, post, avatarCache = null) {
+  // Get username from owner object (matches how comments are stored)
+  // Try multiple paths since comment structure can vary
+  const commenterUsername = comment.owner?.username ||
+                            comment.user?.username ||
+                            comment.username ||
+                            'unknown';
+
+  const el = document.createElement('div');
+  el.className = 'comment';
+  el.dataset.commenter = commenterUsername;
+  el.dataset.likes = comment.like_count || 0;
+  el.dataset.timestamp = comment.created_at || 0;
+
+  // Create comment text span with original text
+  const textSpan = document.createElement('span');
+  textSpan.className = 'comment-text';
+  textSpan.dataset.original = comment.text || '';
+  textSpan.textContent = comment.text || '';
+  el.appendChild(textSpan);
+
+  // Store avatar - prefer pre-fetched cache, then post.avatars, then original URLs
+  // This is critical because html2canvas can't load cross-origin URLs
+  const avatarUrl = (avatarCache && avatarCache[commenterUsername]) ||
+                    (post.avatars && post.avatars[commenterUsername]) ||
+                    comment.owner?.profile_pic_url ||
+                    comment.user?.profile_pic_url ||
+                    comment.profile_pic_url;
+  if (avatarUrl) {
+    el.dataset.avatar = avatarUrl;
+  }
+
+  return el;
+}
+
+// Export all comments button event listener
+exportAllCommentsBtn?.addEventListener('click', exportAllComments);
 
 // Create comment screenshot container
-function createCommentScreenshotContainer(commentEl, post) {
+function createCommentScreenshotContainer(commentEl, post, avatarCache = null) {
   const container = document.createElement('div');
   container.className = 'screenshot-container';
 
@@ -1452,14 +1634,17 @@ function createCommentScreenshotContainer(commentEl, post) {
     month: 'short', day: 'numeric', year: 'numeric'
   }) : '';
 
-  // Get commenter avatar
+  // Get commenter avatar - check dataset first, then avatarCache, then post.avatars
   const commenterInitial = commenter.charAt(0).toUpperCase();
-  const commenterAvatar = post.avatars?.[commenter];
+  const commenterAvatar = commentEl.dataset.avatar ||
+                          (avatarCache && avatarCache[commenter]) ||
+                          post.avatars?.[commenter];
 
   // Get post author info for context
   const postUsername = post.username || 'Unknown';
   const postAuthorInitial = postUsername.charAt(0).toUpperCase();
-  const postAuthorAvatar = post.avatars?.[postUsername];
+  const postAuthorAvatar = (avatarCache && avatarCache[postUsername]) ||
+                           post.avatars?.[postUsername];
 
   container.innerHTML = `
     <div class="screenshot-comment">

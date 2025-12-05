@@ -407,6 +407,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success });
     });
     return true;
+  } else if (message.action === 'downloadCommentScreenshot') {
+    // Download comment screenshot to organized folder path
+    const { dataUrl, filename } = message;
+    chrome.downloads.download({
+      url: dataUrl,
+      filename: filename,
+      saveAs: false
+    }, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        console.error('[Background] Comment screenshot download failed:', chrome.runtime.lastError);
+        sendResponse({ success: false, error: chrome.runtime.lastError.message });
+      } else {
+        console.log('[Background] Comment screenshot downloaded:', filename);
+        sendResponse({ success: true, downloadId });
+      }
+    });
+    return true; // Keep channel open for async response
   }
 
   return true;
@@ -558,12 +575,70 @@ function buildFilePrefix(postInfo, profileUsername = null) {
   return buildFolderName(postInfo, profileUsername);
 }
 
-// Helper function to download data as JSON
-function downloadJSON(data, filename, saveAs = false) {
-  const jsonString = JSON.stringify(data, null, 2);
-  // Use data URL instead of blob URL (Manifest V3 service workers don't have URL.createObjectURL)
-  const dataUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(jsonString);
+// Threshold for using blob URLs (500KB encoded is roughly where data URLs become problematic)
+const LARGE_DATA_THRESHOLD = 500000;
 
+// Helper to create blob URL via offscreen document for large data
+async function createBlobUrlViaOffscreen(data, mimeType, id) {
+  await setupOffscreenDocument();
+
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({
+      type: 'CREATE_BLOB_URL',
+      data: data,
+      mimeType: mimeType,
+      id: id
+    }, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else if (response && response.success) {
+        resolve(response.blobUrl);
+      } else {
+        reject(new Error(response?.error || 'Failed to create blob URL'));
+      }
+    });
+  });
+}
+
+// Helper to revoke blob URL after download
+async function revokeBlobUrl(blobUrl, id) {
+  try {
+    await setupOffscreenDocument();
+    chrome.runtime.sendMessage({
+      type: 'REVOKE_BLOB_URL',
+      blobUrl: blobUrl,
+      id: id
+    });
+  } catch (error) {
+    console.warn('[Background] Could not revoke blob URL:', error);
+  }
+}
+
+// Helper function to download data as JSON
+async function downloadJSON(data, filename, saveAs = false) {
+  const jsonString = JSON.stringify(data, null, 2);
+
+  // Use blob URL for large data to avoid data URL size limits
+  if (jsonString.length > LARGE_DATA_THRESHOLD) {
+    console.log('[Background] Using blob URL for large JSON:', jsonString.length, 'bytes');
+    const blobId = `json_${Date.now()}`;
+
+    try {
+      const blobUrl = await createBlobUrlViaOffscreen(jsonString, 'application/json', blobId);
+      const downloadId = await downloadFile(blobUrl, filename, saveAs);
+
+      // Revoke blob URL after a delay to ensure download starts
+      setTimeout(() => revokeBlobUrl(blobUrl, blobId), 5000);
+
+      return downloadId;
+    } catch (error) {
+      console.error('[Background] Blob URL failed, falling back to data URL:', error);
+      // Fall through to data URL approach
+    }
+  }
+
+  // Use data URL for smaller data (faster, no offscreen document needed)
+  const dataUrl = 'data:application/json;charset=utf-8,' + encodeURIComponent(jsonString);
   return downloadFile(dataUrl, filename, saveAs);
 }
 
@@ -626,10 +701,28 @@ function commentsToCSV(commentsData) {
 }
 
 // Helper function to download CSV
-function downloadCSV(csvContent, filename, saveAs = false) {
-  // Use data URL instead of blob URL (Manifest V3 service workers don't have URL.createObjectURL)
-  const dataUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
+async function downloadCSV(csvContent, filename, saveAs = false) {
+  // Use blob URL for large data to avoid data URL size limits
+  if (csvContent.length > LARGE_DATA_THRESHOLD) {
+    console.log('[Background] Using blob URL for large CSV:', csvContent.length, 'bytes');
+    const blobId = `csv_${Date.now()}`;
 
+    try {
+      const blobUrl = await createBlobUrlViaOffscreen(csvContent, 'text/csv;charset=utf-8', blobId);
+      const downloadId = await downloadFile(blobUrl, filename, saveAs);
+
+      // Revoke blob URL after a delay to ensure download starts
+      setTimeout(() => revokeBlobUrl(blobUrl, blobId), 5000);
+
+      return downloadId;
+    } catch (error) {
+      console.error('[Background] Blob URL failed, falling back to data URL:', error);
+      // Fall through to data URL approach
+    }
+  }
+
+  // Use data URL for smaller data (faster, no offscreen document needed)
+  const dataUrl = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csvContent);
   return downloadFile(dataUrl, filename, saveAs);
 }
 
@@ -993,7 +1086,27 @@ ${commentsHTML}
 }
 
 // Helper function to download HTML
-function downloadHTML(htmlContent, filename, saveAs = false) {
+async function downloadHTML(htmlContent, filename, saveAs = false) {
+  // Use blob URL for large data to avoid data URL size limits
+  if (htmlContent.length > LARGE_DATA_THRESHOLD) {
+    console.log('[Background] Using blob URL for large HTML:', htmlContent.length, 'bytes');
+    const blobId = `html_${Date.now()}`;
+
+    try {
+      const blobUrl = await createBlobUrlViaOffscreen(htmlContent, 'text/html;charset=utf-8', blobId);
+      const downloadId = await downloadFile(blobUrl, filename, saveAs);
+
+      // Revoke blob URL after a delay to ensure download starts
+      setTimeout(() => revokeBlobUrl(blobUrl, blobId), 5000);
+
+      return downloadId;
+    } catch (error) {
+      console.error('[Background] Blob URL failed, falling back to data URL:', error);
+      // Fall through to data URL approach
+    }
+  }
+
+  // Use data URL for smaller data (faster, no offscreen document needed)
   const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(htmlContent);
   return downloadFile(dataUrl, filename, saveAs);
 }
