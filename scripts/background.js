@@ -486,6 +486,94 @@ async function cropScreenshot(dataUrl, cropLeftPercent = 15, cropBottomPercent =
   }
 }
 
+// Capture screenshot with iPhone mobile emulation using Chrome Debugger API
+async function captureMobileScreenshot(tab) {
+  // iPhone 14 Pro dimensions
+  const IPHONE_WIDTH = 393;
+  const IPHONE_HEIGHT = 852;
+  const DEVICE_SCALE_FACTOR = 3;
+  const MOBILE_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+
+  const debuggeeId = { tabId: tab.id };
+
+  try {
+    // Attach debugger to the tab
+    await chrome.debugger.attach(debuggeeId, '1.3');
+    console.log('[Background] Debugger attached for mobile screenshot');
+
+    // Enable Emulation domain
+    await chrome.debugger.sendCommand(debuggeeId, 'Emulation.setDeviceMetricsOverride', {
+      width: IPHONE_WIDTH,
+      height: IPHONE_HEIGHT,
+      deviceScaleFactor: DEVICE_SCALE_FACTOR,
+      mobile: true,
+      screenWidth: IPHONE_WIDTH,
+      screenHeight: IPHONE_HEIGHT
+    });
+
+    // Set mobile user agent
+    await chrome.debugger.sendCommand(debuggeeId, 'Emulation.setUserAgentOverride', {
+      userAgent: MOBILE_USER_AGENT,
+      platform: 'iPhone'
+    });
+
+    // Wait for the page to re-render with mobile layout
+    await new Promise(resolve => setTimeout(resolve, 1500));
+
+    // Reload the page to get the mobile version from Instagram
+    await chrome.debugger.sendCommand(debuggeeId, 'Page.reload', { ignoreCache: true });
+
+    // Wait for page to load
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Capture screenshot using debugger (gives us the emulated view)
+    // Crop to 1179 × 2161 to show only the top 6 posts (cropping bottom)
+    const result = await chrome.debugger.sendCommand(debuggeeId, 'Page.captureScreenshot', {
+      format: 'png',
+      quality: 100,
+      fromSurface: true,
+      captureBeyondViewport: false,
+      clip: {
+        x: 0,
+        y: 0,
+        width: IPHONE_WIDTH,
+        height: 2161 / DEVICE_SCALE_FACTOR, // Convert to CSS pixels (720.33)
+        scale: 1
+      }
+    });
+
+    // Clear device metrics (restore normal view)
+    await chrome.debugger.sendCommand(debuggeeId, 'Emulation.clearDeviceMetricsOverride');
+
+    // Detach debugger
+    await chrome.debugger.detach(debuggeeId);
+    console.log('[Background] Debugger detached, mobile screenshot captured');
+
+    // Reload page to restore desktop view
+    chrome.tabs.reload(tab.id);
+
+    // Return as data URL
+    return 'data:image/png;base64,' + result.data;
+
+  } catch (error) {
+    console.error('[Background] Mobile screenshot error:', error);
+
+    // Try to detach debugger on error
+    try {
+      await chrome.debugger.detach(debuggeeId);
+    } catch (detachError) {
+      // Ignore detach errors
+    }
+
+    // Fallback to regular screenshot
+    console.log('[Background] Falling back to regular screenshot');
+    return await chrome.tabs.captureVisibleTab(tab.windowId, {
+      format: 'png',
+      quality: 100
+    });
+  }
+}
+
 // Render Instagram-style screenshot using offscreen document
 async function renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl) {
   try {
@@ -1749,6 +1837,43 @@ chrome.runtime.onConnect.addListener((port) => {
               posts: state.collectedPosts
             } : { exists: false }
           });
+
+        } else if (msg.action === 'captureProfileScreenshot') {
+          // Capture visible tab screenshot for profile page with iPhone-style mobile emulation
+          const { username, saveAs } = msg.data;
+
+          try {
+            // Get the current active tab
+            const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+            if (!tab) {
+              throw new Error('No active tab found');
+            }
+
+            // Capture using mobile emulation for iPhone-like layout
+            const dataUrl = await captureMobileScreenshot(tab);
+
+            // Build filename
+            const date = new Date();
+            const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
+            const filename = `Instagram/${username}/${username}_profile_screenshot_${dateStr}.png`;
+
+            // Download the screenshot
+            await downloadFile(dataUrl, filename, saveAs);
+
+            port.postMessage({
+              type: 'profileScreenshotCaptured',
+              data: { success: true, filename }
+            });
+
+            console.log('[Background] Profile screenshot captured:', filename);
+          } catch (error) {
+            console.error('[Background] Error capturing profile screenshot:', error);
+            port.postMessage({
+              type: 'profileScreenshotCaptured',
+              data: { success: false, error: error.message }
+            });
+          }
         }
       } catch (error) {
         console.error('[Background] Error:', error);
@@ -1934,6 +2059,33 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       // Trigger download all
       if (currentData.media || currentData.comments) {
         const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
+
+        // Check for signs of failed/partial extraction (silent failures)
+        // These indicate the data extraction may have failed but didn't throw an error
+        const hasZeroEngagement = !postInfo.like_count && !postInfo.comment_count;
+        const hasUppercasePostType = postInfo.post_type && postInfo.post_type === postInfo.post_type.toUpperCase() && postInfo.post_type.length > 1;
+        const isMissingPostType = !postInfo.post_type;
+        const hasMedia = currentData.media?.media?.length > 0;
+
+        // If we have media but suspicious metadata, flag as potential silent failure
+        if (hasMedia && (hasZeroEngagement || hasUppercasePostType || isMissingPostType)) {
+          const warningReasons = [];
+          if (hasZeroEngagement) warningReasons.push('0 likes/comments');
+          if (hasUppercasePostType) warningReasons.push(`uppercase post_type: "${postInfo.post_type}"`);
+          if (isMissingPostType) warningReasons.push('missing post_type');
+
+          console.warn(`[Background] ⚠️ Possible silent extraction failure for ${tab.url}:`, warningReasons.join(', '));
+
+          // Track this as a potential failure (but still download what we have)
+          batchState.failedUrls.push({
+            url: tab.url,
+            error: `Partial extraction (${warningReasons.join(', ')})`,
+            partialData: true,
+            shortcode: extractShortcode(tab.url),
+            postInfo: postInfo
+          });
+        }
+
         // Use profileUsername from batch state if available (for collabs, keeps folder under profile being scraped)
         const username = batchState.profileUsername || postInfo.username || 'unknown';
         const folderName = buildFolderName(postInfo, batchState.profileUsername);
@@ -2055,7 +2207,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           // Too many 429 errors, stop batch processing
           console.error('[Background] 🛑 Too many 429 errors, stopping batch processing');
           batchState.isProcessing = false;
-          batchState.failedUrls.push({ url: tab.url, error: 'Rate limited - batch stopped after multiple 429 errors' });
+          batchState.failedUrls.push({
+            url: tab.url,
+            error: 'Rate limited - batch stopped after multiple 429 errors',
+            shortcode: extractShortcode(tab.url),
+            timestamp: Date.now()
+          });
 
           if (batchState.port) {
             batchState.port.postMessage({
@@ -2100,8 +2257,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         }, batchState.currentPauseDuration);
         return;
       } else {
-        // Non-429 error
-        batchState.failedUrls.push({ url: tab.url, error: errorMsg });
+        // Non-429 error - include more context for debugging
+        batchState.failedUrls.push({
+          url: tab.url,
+          error: errorMsg,
+          shortcode: extractShortcode(tab.url),
+          timestamp: Date.now()
+        });
       }
     }
 
