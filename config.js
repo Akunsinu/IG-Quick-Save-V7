@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '7.0.0',
-  VERSION_NAME: 'V7.0 Beta - Team Sync & Resume',
+  VERSION: '7.6.0',
+  VERSION_NAME: 'V7.6 - Account Picker & Bulk Comment Export',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================

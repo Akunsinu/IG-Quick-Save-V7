@@ -182,6 +182,15 @@ async function init() {
     } else if (msg.type === 'folderScanStats') {
       // Folder scan stats loaded
       handleFolderScanStats(msg.data);
+    } else if (msg.type === 'profileScreenshotCaptured') {
+      // Profile screenshot captured
+      if (msg.data.success) {
+        console.log('[Popup] Profile screenshot saved:', msg.data.filename);
+        showStatus('success', '📸 Profile screenshot saved!');
+      } else {
+        console.error('[Popup] Profile screenshot failed:', msg.data.error);
+        showStatus('warning', '📸 Screenshot failed: ' + msg.data.error);
+      }
     }
 
     // Handle sync-related messages (defined at bottom of file)
@@ -549,6 +558,7 @@ const successCount = document.getElementById('successCount');
 const failedSection = document.getElementById('failedSection');
 const failedCount = document.getElementById('failedCount');
 const failedUrls = document.getElementById('failedUrls');
+const retryAllFailedBtn = document.getElementById('retryAllFailedBtn');
 
 // Skip downloaded toggle elements
 const skipDownloadedToggle = document.getElementById('skipDownloadedToggle');
@@ -578,6 +588,9 @@ const filterByTeamToggle = document.getElementById('filterByTeamToggle');
 const profileTeamFilterInfo = document.getElementById('profileTeamFilterInfo');
 const profileNewPostsCount = document.getElementById('profileNewPostsCount');
 const profileTeamDownloadedCount = document.getElementById('profileTeamDownloadedCount');
+
+// Profile screenshot toggle
+const downloadProfileScreenshotToggle = document.getElementById('downloadProfileScreenshotToggle');
 
 // Toggle batch section
 toggleBatchBtn.addEventListener('click', () => {
@@ -983,13 +996,7 @@ function updateBatchProgress(data) {
   }
 
   successCount.textContent = success;
-
-  if (failed.length > 0) {
-    failedSection.classList.remove('hidden');
-    failedCount.textContent = failed.length;
-    failedUrls.innerHTML = failed.map(f => `<div>${f.url}<br><span style="color: #999;">Error: ${f.error}</span></div>`).join('<br>');
-  }
-
+  renderFailedUrls(failed);
   batchResults.classList.remove('hidden');
 }
 
@@ -1009,12 +1016,9 @@ function handleBatchComplete(data) {
   }
 
   successCount.textContent = success;
+  renderFailedUrls(failed);
 
   if (failed.length > 0) {
-    failedSection.classList.remove('hidden');
-    failedCount.textContent = failed.length;
-    failedUrls.innerHTML = failed.map(f => `<div>${f.url}<br><span style="color: #999;">Error: ${f.error}</span></div>`).join('<br>');
-
     const skippedMsg = skipped > 0 ? `, ${skipped} skipped` : '';
     showStatus('warning', `✅ Batch complete! ${success}/${total} succeeded, ${failed.length} failed${skippedMsg}`);
   } else {
@@ -1038,16 +1042,112 @@ function handleBatchStopped(data) {
   batchUrls.disabled = false;
 
   successCount.textContent = success;
-
-  if (failed.length > 0) {
-    failedSection.classList.remove('hidden');
-    failedCount.textContent = failed.length;
-    failedUrls.innerHTML = failed.map(f => `<div>${f.url}<br><span style="color: #999;">Error: ${f.error}</span></div>`).join('<br>');
-  }
-
+  renderFailedUrls(failed);
   batchResults.classList.remove('hidden');
   showStatus('warning', `⏹️ Batch stopped. ${success} posts completed.`);
 }
+
+// Helper function to render failed URLs with individual retry buttons
+function renderFailedUrls(failed) {
+  if (!failed || failed.length === 0) {
+    failedSection.classList.add('hidden');
+    return;
+  }
+
+  failedSection.classList.remove('hidden');
+  failedCount.textContent = failed.length;
+
+  failedUrls.innerHTML = failed.map((f, index) => `
+    <div class="failed-item" data-index="${index}" data-url="${escapeHtml(f.url)}" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid #ffcdd2;">
+      <div style="word-break: break-all; margin-bottom: 4px;">${escapeHtml(f.url)}</div>
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+        <span style="color: #999; font-size: 10px; flex: 1;">${escapeHtml(f.error || 'Unknown error')}</span>
+        <button class="retry-single-btn secondary" data-url="${escapeHtml(f.url)}"
+                style="font-size: 9px; padding: 2px 6px; cursor: pointer; white-space: nowrap;">
+          🔄 Retry
+        </button>
+      </div>
+    </div>
+  `).join('');
+}
+
+// HTML escape helper
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Retry all failed URLs
+function retryAllFailed() {
+  const failedItems = Array.from(failedUrls.querySelectorAll('.failed-item'));
+  const urlsToRetry = failedItems.map(item => item.dataset.url);
+
+  if (urlsToRetry.length === 0) {
+    showStatus('info', 'No failed URLs to retry');
+    return;
+  }
+
+  console.log('[Popup] Retrying all failed URLs:', urlsToRetry.length);
+
+  // Clear failed section
+  failedSection.classList.add('hidden');
+  failedUrls.innerHTML = '';
+
+  // Start new batch with failed URLs
+  port.postMessage({
+    action: 'startBatch',
+    data: {
+      urls: urlsToRetry,
+      skipDownloaded: false,  // Don't skip - we're retrying failures
+      isRetry: true
+    }
+  });
+
+  showStatus('info', `🔄 Retrying ${urlsToRetry.length} failed URL(s)...`);
+}
+
+// Retry single failed URL
+function retrySingleFailed(url) {
+  if (!url) return;
+
+  console.log('[Popup] Retrying single URL:', url);
+
+  // Remove from failed list UI immediately
+  const item = failedUrls.querySelector(`[data-url="${CSS.escape(url)}"]`);
+  if (item) item.remove();
+
+  // Update count
+  const remaining = failedUrls.querySelectorAll('.failed-item').length;
+  failedCount.textContent = remaining;
+  if (remaining === 0) {
+    failedSection.classList.add('hidden');
+  }
+
+  // Start single-URL batch
+  port.postMessage({
+    action: 'startBatch',
+    data: {
+      urls: [url],
+      skipDownloaded: false,
+      isRetry: true
+    }
+  });
+
+  showStatus('info', `🔄 Retrying 1 URL...`);
+}
+
+// Retry button event listeners
+retryAllFailedBtn?.addEventListener('click', retryAllFailed);
+
+// Event delegation for individual retry buttons
+failedUrls?.addEventListener('click', (e) => {
+  if (e.target.classList.contains('retry-single-btn')) {
+    const url = e.target.dataset.url;
+    retrySingleFailed(url);
+  }
+});
 
 // Profile Scraper Controls
 const toggleProfileBtn = document.getElementById('toggleProfileBtn');
@@ -1363,12 +1463,26 @@ stopProfileScrapeBtn.addEventListener('click', async () => {
 });
 
 // Download all collected profile posts
-downloadProfilePostsBtn.addEventListener('click', () => {
+downloadProfilePostsBtn.addEventListener('click', async () => {
   console.log('[Popup] Download button clicked, collectedProfilePosts:', collectedProfilePosts.length);
 
   if (collectedProfilePosts.length === 0) {
     showStatus('error', 'No posts collected yet');
     return;
+  }
+
+  // Capture profile screenshot if enabled
+  const shouldCaptureScreenshot = downloadProfileScreenshotToggle && downloadProfileScreenshotToggle.checked;
+  const username = collectedProfileUsername || 'unknown';
+
+  if (shouldCaptureScreenshot && port) {
+    showStatus('info', '📸 Capturing profile screenshot...');
+    const saveAs = askWhereToSaveCheckbox && askWhereToSaveCheckbox.checked;
+    port.postMessage({
+      action: 'captureProfileScreenshot',
+      data: { username, saveAs }
+    });
+    // Note: Screenshot happens asynchronously, we continue with the batch setup
   }
 
   // Convert to URLs
