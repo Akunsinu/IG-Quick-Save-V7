@@ -1308,6 +1308,49 @@ function escapeHtml(text) {
 }
 
 // Build filename matching extension naming convention: username_IG_POSTTYPE_YYYYMMDD_shortcode[_collab_user1_user2]
+// Build unified comment screenshot filename
+// Format: username_IG_POST_{POSTDATE}_{SHORTCODE}_COMMENT_{COMMENT_NUMBER}_{COMMENT_DATE}_{COMMENT_AUTHOR}
+function buildCommentFilename(post, comment, commentIndex) {
+  const username = post.username || 'unknown';
+  const shortcode = post.shortcode || 'post';
+
+  // Post date
+  let postDateStr = 'unknown';
+  if (post.posted_at) {
+    const date = new Date(post.posted_at);
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    postDateStr = `${year}${month}${day}`;
+  }
+
+  // Comment date
+  let commentDateStr = 'unknown';
+  const commentTimestamp = comment.created_at || comment.timestamp;
+  if (commentTimestamp) {
+    // Handle both Unix timestamp (seconds) and milliseconds
+    const ts = commentTimestamp > 9999999999 ? commentTimestamp : commentTimestamp * 1000;
+    const date = new Date(ts);
+    if (!isNaN(date.getTime())) {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      commentDateStr = `${year}${month}${day}`;
+    }
+  }
+
+  // Comment author
+  const commentAuthor = comment.owner?.username ||
+                        comment.user?.username ||
+                        comment.username ||
+                        'unknown';
+
+  // Comment number (1-indexed)
+  const commentNum = String(commentIndex + 1).padStart(3, '0');
+
+  return `${username}_IG_POST_${postDateStr}_${shortcode}_COMMENT_${commentNum}_${commentDateStr}_${commentAuthor}`;
+}
+
 function buildFilePrefix(post) {
   const username = post.username || 'unknown';
   const postType = (post.post_type || 'POST').toUpperCase();
@@ -1752,8 +1795,9 @@ async function exportAllComments() {
           allowTaint: true
         });
 
-        // Build filename
-        const filename = `${basePath}/${folderName}_comment_${i + 1}_${commenter}.png`;
+        // Build filename using unified format
+        const commentFilename = buildCommentFilename(post, comment, i);
+        const filename = `${basePath}/${commentFilename}.png`;
         const dataUrl = canvas.toDataURL('image/png');
 
         // Download using chrome.downloads API for folder path support
@@ -1937,21 +1981,20 @@ async function exportCommentScreenshot(commentEl) {
       allowTaint: true
     });
 
-    // Build filename: {poster}_IG_COMMENT_{YYYYMMDD}_{shortcode}_{commenter}
-    const poster = post.username || 'unknown';
+    // Build filename using unified format
+    // Get comment index from data attribute and find the comment object
+    const commentId = commentEl.dataset.commentId || '0';
+    const commentIndex = parseInt(commentId.split('-')[0]) || 0; // Handle replies like "0-1"
+    const timestamp = parseInt(commentEl.dataset.timestamp) || 0;
     const commenter = commentEl.dataset.commenter || 'unknown';
-    const shortcode = post.shortcode || 'post';
 
-    let dateStr = 'unknown-date';
-    if (post.posted_at) {
-      const date = new Date(post.posted_at);
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const day = String(date.getDate()).padStart(2, '0');
-      dateStr = `${year}${month}${day}`;
-    }
+    // Create a minimal comment object for the filename builder
+    const commentObj = {
+      created_at: timestamp,
+      owner: { username: commenter }
+    };
 
-    const filename = `${poster}_IG_COMMENT_${dateStr}_${shortcode}_${commenter}.png`;
+    const filename = buildCommentFilename(post, commentObj, commentIndex) + '.png';
 
     // Download
     const link = document.createElement('a');
@@ -2203,9 +2246,9 @@ async function bulkExportCommentsForAccount(targetUsername) {
             allowTaint: true
           });
 
-          // Build filename
-          const commentId = comment.pk || comment.id || `${i + 1}`;
-          const filename = `${basePath}/${commenter}_${commentId}.jpg`;
+          // Build filename using unified format
+          const commentFilename = buildCommentFilename(post, comment, i);
+          const filename = `${basePath}/${commentFilename}.jpg`;
 
           // Download via extension
           const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
@@ -2368,8 +2411,9 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
             allowTaint: true
           });
 
-          const commentId = comment.pk || comment.id || `${i + 1}`;
-          const filename = `${basePath}/${commenter}_${commentId}.jpg`;
+          // Build filename using unified format
+          const commentFilename = buildCommentFilename(post, comment, i);
+          const filename = `${basePath}/${commentFilename}.jpg`;
           const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
 
           await new Promise((resolve, reject) => {
