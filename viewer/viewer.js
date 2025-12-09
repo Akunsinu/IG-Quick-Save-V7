@@ -4,6 +4,11 @@ let currentView = 'grid';
 let currentPostIndex = 0;
 let currentMediaIndex = 0;
 
+// Account picker state
+let scannedAccounts = {}; // { username: { postFolders: [dirHandle, ...], postCount: N } }
+let selectedAccounts = new Set();
+let rootDirHandle = null;
+
 // Theme toggle
 const themeToggle = document.getElementById('themeToggle');
 
@@ -117,23 +122,27 @@ async function selectFolder() {
     console.log('Opening folder picker...');
     const dirHandle = await window.showDirectoryPicker();
     console.log('Folder selected:', dirHandle.name);
+    rootDirHandle = dirHandle;
 
     welcomeScreen.classList.add('hidden');
     loading.classList.remove('hidden');
+    updateLoadingText('Scanning for accounts...');
 
-    posts = await scanFolder(dirHandle);
-    console.log('Scan complete. Found', posts.length, 'posts');
+    // Phase 1: Scan for accounts (metadata only, no media loading)
+    scannedAccounts = {};
+    await scanForAccounts(dirHandle);
+
+    const accountNames = Object.keys(scannedAccounts);
+    console.log('Scan complete. Found', accountNames.length, 'accounts');
 
     loading.classList.add('hidden');
 
-    if (posts.length > 0) {
-      postsContainer.classList.remove('hidden');
-      viewToggle.classList.remove('hidden');
-      updateStats();
-      renderPosts();
+    if (accountNames.length > 0) {
+      // Show account picker
+      showAccountPicker();
     } else {
       welcomeScreen.classList.remove('hidden');
-      alert('No Instagram posts found in this folder.\n\nMake sure you selected a folder containing posts downloaded with IG Quick Save.\n\nExpected structure:\nInstagram/\n  username_POST_date_code/\n    *_metadata.json\n    media/\n    comments/');
+      alert('No Instagram posts found in this folder.\n\nMake sure you selected a folder containing posts downloaded with IG Quick Save.\n\nExpected structure:\nInstagram/\n  username/\n    username_POST_date_code/\n      *_metadata.json\n      media/');
     }
   } catch (err) {
     if (err.name !== 'AbortError') {
@@ -143,6 +152,224 @@ async function selectFolder() {
     }
     loading.classList.add('hidden');
     welcomeScreen.classList.remove('hidden');
+  }
+}
+
+// Update loading text
+function updateLoadingText(text) {
+  const loadingText = document.getElementById('loadingText');
+  if (loadingText) {
+    loadingText.textContent = text;
+  }
+}
+
+// Phase 1: Scan folder structure for accounts without loading media
+async function scanForAccounts(dirHandle, path = '', depth = 0) {
+  const maxDepth = 5;
+
+  if (depth > maxDepth) {
+    return;
+  }
+
+  try {
+    for await (const entry of dirHandle.values()) {
+      try {
+        if (entry.kind === 'directory') {
+          // Check if this folder has a metadata file (it's a post folder)
+          const metadata = await findMetadataQuick(entry);
+
+          if (metadata && metadata.username) {
+            // This is a post folder - add to the account
+            const username = metadata.username;
+            if (!scannedAccounts[username]) {
+              scannedAccounts[username] = {
+                postFolders: [],
+                postCount: 0,
+                latestPost: null
+              };
+            }
+            scannedAccounts[username].postFolders.push({
+              handle: entry,
+              metadata: metadata
+            });
+            scannedAccounts[username].postCount++;
+
+            // Track latest post date for sorting
+            if (metadata.posted_at) {
+              const postDate = new Date(metadata.posted_at);
+              if (!scannedAccounts[username].latestPost || postDate > scannedAccounts[username].latestPost) {
+                scannedAccounts[username].latestPost = postDate;
+              }
+            }
+          } else {
+            // Not a post folder - recurse into it
+            await scanForAccounts(entry, path + entry.name + '/', depth + 1);
+          }
+        }
+      } catch (entryErr) {
+        console.warn('Error scanning entry:', entry.name, entryErr.message);
+      }
+    }
+  } catch (scanErr) {
+    console.error('Error scanning directory:', path, scanErr.message);
+  }
+}
+
+// Quick metadata check - only reads the JSON, doesn't load media
+async function findMetadataQuick(dirHandle) {
+  try {
+    for await (const entry of dirHandle.values()) {
+      if (entry.kind === 'file' && entry.name.endsWith('_metadata.json')) {
+        try {
+          const file = await entry.getFile();
+          const text = await file.text();
+          return JSON.parse(text);
+        } catch (e) {
+          // Silently skip invalid metadata files
+        }
+      }
+    }
+  } catch (e) {
+    // Silently skip inaccessible folders
+  }
+  return null;
+}
+
+// Show account picker UI
+function showAccountPicker() {
+  const accountPicker = document.getElementById('accountPicker');
+  const accountList = document.getElementById('accountPickerList');
+
+  // Sort accounts by post count (descending)
+  const sortedAccounts = Object.entries(scannedAccounts)
+    .sort((a, b) => b[1].postCount - a[1].postCount);
+
+  // Select all by default
+  selectedAccounts = new Set(sortedAccounts.map(([username]) => username));
+
+  // Render account list
+  accountList.innerHTML = sortedAccounts.map(([username, data]) => {
+    const initial = username.charAt(0).toUpperCase();
+    return `
+      <div class="account-picker-item selected" data-username="${escapeHtml(username)}">
+        <div class="account-picker-checkbox"></div>
+        <div class="account-picker-avatar">${initial}</div>
+        <div class="account-picker-info">
+          <div class="account-picker-username">${escapeHtml(username)}</div>
+          <div class="account-picker-stats">${data.postCount} post${data.postCount !== 1 ? 's' : ''}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Add click handlers
+  accountList.querySelectorAll('.account-picker-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const username = item.dataset.username;
+      if (selectedAccounts.has(username)) {
+        selectedAccounts.delete(username);
+        item.classList.remove('selected');
+      } else {
+        selectedAccounts.add(username);
+        item.classList.add('selected');
+      }
+      updateAccountPickerSummary();
+    });
+  });
+
+  updateAccountPickerSummary();
+  accountPicker.classList.remove('hidden');
+}
+
+// Update account picker summary
+function updateAccountPickerSummary() {
+  const summary = document.getElementById('accountPickerSummary');
+  const loadBtn = document.getElementById('accountPickerLoad');
+  const totalPosts = Array.from(selectedAccounts).reduce((sum, username) => {
+    return sum + (scannedAccounts[username]?.postCount || 0);
+  }, 0);
+
+  summary.textContent = `${selectedAccounts.size} account${selectedAccounts.size !== 1 ? 's' : ''} selected (${totalPosts} posts)`;
+  loadBtn.disabled = selectedAccounts.size === 0;
+}
+
+// Account picker button handlers
+document.getElementById('selectAllAccounts')?.addEventListener('click', () => {
+  selectedAccounts = new Set(Object.keys(scannedAccounts));
+  document.querySelectorAll('.account-picker-item').forEach(item => {
+    item.classList.add('selected');
+  });
+  updateAccountPickerSummary();
+});
+
+document.getElementById('deselectAllAccounts')?.addEventListener('click', () => {
+  selectedAccounts.clear();
+  document.querySelectorAll('.account-picker-item').forEach(item => {
+    item.classList.remove('selected');
+  });
+  updateAccountPickerSummary();
+});
+
+document.getElementById('accountPickerCancel')?.addEventListener('click', () => {
+  document.getElementById('accountPicker').classList.add('hidden');
+  welcomeScreen.classList.remove('hidden');
+  scannedAccounts = {};
+  selectedAccounts.clear();
+});
+
+document.getElementById('accountPickerLoad')?.addEventListener('click', loadSelectedAccounts);
+
+// Phase 2: Load posts from selected accounts
+async function loadSelectedAccounts() {
+  if (selectedAccounts.size === 0) return;
+
+  const accountPicker = document.getElementById('accountPicker');
+  accountPicker.classList.add('hidden');
+  loading.classList.remove('hidden');
+
+  posts = [];
+  let loadedCount = 0;
+  const totalPosts = Array.from(selectedAccounts).reduce((sum, username) => {
+    return sum + (scannedAccounts[username]?.postCount || 0);
+  }, 0);
+
+  try {
+    for (const username of selectedAccounts) {
+      const accountData = scannedAccounts[username];
+      if (!accountData) continue;
+
+      for (const { handle, metadata } of accountData.postFolders) {
+        loadedCount++;
+        updateLoadingText(`Loading posts... ${loadedCount}/${totalPosts}`);
+
+        try {
+          const post = await loadPost(handle, metadata);
+          if (post) {
+            posts.push(post);
+          }
+        } catch (err) {
+          console.warn('Error loading post:', metadata?.shortcode, err.message);
+        }
+      }
+    }
+
+    console.log('Loading complete. Loaded', posts.length, 'posts');
+    loading.classList.add('hidden');
+
+    if (posts.length > 0) {
+      postsContainer.classList.remove('hidden');
+      viewToggle.classList.remove('hidden');
+      updateStats();
+      renderPosts();
+    } else {
+      welcomeScreen.classList.remove('hidden');
+      alert('Failed to load any posts. Please try again.');
+    }
+  } catch (err) {
+    console.error('Error loading posts:', err);
+    loading.classList.add('hidden');
+    welcomeScreen.classList.remove('hidden');
+    alert('Error loading posts: ' + err.message);
   }
 }
 
@@ -1757,3 +1984,422 @@ document.addEventListener('click', (e) => {
     }
   }
 });
+
+// Bulk export all comments for an account
+const bulkExportCommentsBtn = document.getElementById('bulkExportCommentsBtn');
+
+bulkExportCommentsBtn?.addEventListener('click', showBulkExportAccountPicker);
+
+// Show account picker for bulk comment export
+function showBulkExportAccountPicker() {
+  // Get unique accounts from loaded posts that have comments
+  const accountsWithComments = {};
+
+  for (const post of posts) {
+    if (post.comments && post.comments.length > 0) {
+      const username = post.username || 'unknown';
+      if (!accountsWithComments[username]) {
+        accountsWithComments[username] = {
+          postCount: 0,
+          commentCount: 0
+        };
+      }
+      accountsWithComments[username].postCount++;
+
+      // Count all comments including replies
+      function countComments(comments) {
+        let count = 0;
+        for (const comment of comments) {
+          count++;
+          if (comment.replies && comment.replies.length > 0) {
+            count += countComments(comment.replies);
+          }
+        }
+        return count;
+      }
+      accountsWithComments[username].commentCount += countComments(post.comments);
+    }
+  }
+
+  const accountNames = Object.keys(accountsWithComments);
+
+  if (accountNames.length === 0) {
+    alert('No posts with comments found. Load some posts with comments first.');
+    return;
+  }
+
+  // If only one account, export directly
+  if (accountNames.length === 1) {
+    const username = accountNames[0];
+    const data = accountsWithComments[username];
+    if (confirm(`Export all ${data.commentCount} comment screenshots from @${username}?\n\nThis will export comments from ${data.postCount} posts.`)) {
+      bulkExportCommentsForAccount(username);
+    }
+    return;
+  }
+
+  // Multiple accounts - show picker
+  const choices = accountNames.map(username => {
+    const data = accountsWithComments[username];
+    return `@${username} (${data.commentCount} comments from ${data.postCount} posts)`;
+  });
+
+  const choice = prompt(
+    `Multiple accounts found. Enter the username to export comments for:\n\n${choices.join('\n')}\n\nOr type "all" to export from all accounts.`
+  );
+
+  if (!choice) return;
+
+  if (choice.toLowerCase() === 'all') {
+    if (confirm(`Export ALL comment screenshots from all ${accountNames.length} accounts?`)) {
+      bulkExportCommentsForAllAccounts(accountsWithComments);
+    }
+  } else {
+    const username = choice.replace('@', '').trim();
+    if (accountsWithComments[username]) {
+      bulkExportCommentsForAccount(username);
+    } else {
+      alert(`Account "${username}" not found. Please enter an exact username.`);
+    }
+  }
+}
+
+// Export all comments for a specific account
+async function bulkExportCommentsForAccount(targetUsername) {
+  const btn = bulkExportCommentsBtn;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+
+  try {
+    // Get all posts for this account that have comments
+    const accountPosts = posts.filter(p =>
+      (p.username || 'unknown') === targetUsername &&
+      p.comments &&
+      p.comments.length > 0
+    );
+
+    if (accountPosts.length === 0) {
+      alert(`No posts with comments found for @${targetUsername}`);
+      return;
+    }
+
+    // Count total comments
+    let totalComments = 0;
+    for (const post of accountPosts) {
+      function countComments(comments) {
+        let count = 0;
+        for (const comment of comments) {
+          count++;
+          if (comment.replies && comment.replies.length > 0) {
+            count += countComments(comment.replies);
+          }
+        }
+        return count;
+      }
+      totalComments += countComments(post.comments);
+    }
+
+    btn.textContent = `💬 Exporting 0/${totalComments}...`;
+
+    let exportedCount = 0;
+    let failCount = 0;
+
+    // Process each post
+    for (let postIdx = 0; postIdx < accountPosts.length; postIdx++) {
+      const post = accountPosts[postIdx];
+
+      // Flatten all comments including replies
+      const allComments = [];
+      function collectComments(comments, depth = 0) {
+        for (const comment of comments) {
+          allComments.push({ comment, depth });
+          if (comment.replies && comment.replies.length > 0) {
+            collectComments(comment.replies, depth + 1);
+          }
+        }
+      }
+      collectComments(post.comments);
+
+      // Build folder path for this post
+      const folderName = buildFilePrefix(post);
+      const basePath = `Instagram/${targetUsername}/${folderName}/comments/screenshots`;
+
+      // Initialize avatar cache from post.avatars
+      const avatarCache = { ...(post.avatars || {}) };
+
+      // Collect unique avatar URLs that need fetching
+      const avatarsToFetch = new Map();
+      for (const { comment } of allComments) {
+        const commenter = comment.owner?.username ||
+                          comment.user?.username ||
+                          comment.username ||
+                          'unknown';
+
+        if (!avatarCache[commenter]) {
+          const avatarUrl = comment.owner?.profile_pic_url ||
+                            comment.user?.profile_pic_url ||
+                            comment.profile_pic_url;
+          if (avatarUrl && !avatarUrl.startsWith('data:')) {
+            avatarsToFetch.set(commenter, avatarUrl);
+          }
+        }
+      }
+
+      // Pre-fetch avatars
+      if (avatarsToFetch.size > 0) {
+        btn.textContent = `💬 Loading avatars for post ${postIdx + 1}/${accountPosts.length}...`;
+
+        const results = await Promise.all(
+          Array.from(avatarsToFetch.entries()).map(async ([commenter, url]) => {
+            const base64 = await prefetchAvatarAsBase64(url);
+            return [commenter, base64];
+          })
+        );
+
+        for (const [commenter, base64] of results) {
+          if (base64) {
+            avatarCache[commenter] = base64;
+          }
+        }
+      }
+
+      // Process comments for this post
+      for (let i = 0; i < allComments.length; i++) {
+        const { comment } = allComments[i];
+        const commenter = comment.owner?.username ||
+                          comment.user?.username ||
+                          comment.username ||
+                          'unknown';
+
+        exportedCount++;
+        btn.textContent = `💬 Exporting ${exportedCount}/${totalComments}...`;
+
+        try {
+          // Create temporary comment element
+          const tempCommentEl = createTempCommentElement(comment, post, avatarCache);
+
+          // Create screenshot container
+          const container = createCommentScreenshotContainer(tempCommentEl, post, avatarCache);
+          document.body.appendChild(container);
+
+          // Wait for images
+          const images = container.querySelectorAll('img');
+          await Promise.all(Array.from(images).map(img => {
+            if (img.complete) return Promise.resolve();
+            return new Promise(resolve => {
+              img.onload = resolve;
+              img.onerror = resolve;
+            });
+          }));
+
+          await new Promise(resolve => setTimeout(resolve, 50));
+
+          // Capture with html2canvas
+          const screenshotComment = container.querySelector('.screenshot-comment');
+          const canvas = await html2canvas(screenshotComment, {
+            backgroundColor: '#ffffff',
+            scale: 2,
+            useCORS: true,
+            allowTaint: true
+          });
+
+          // Build filename
+          const commentId = comment.pk || comment.id || `${i + 1}`;
+          const filename = `${basePath}/${commenter}_${commentId}.jpg`;
+
+          // Download via extension
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+          await new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage({
+              action: 'downloadCommentScreenshot',
+              dataUrl: dataUrl,
+              filename: filename
+            }, response => {
+              if (response?.success) {
+                resolve();
+              } else {
+                reject(new Error(response?.error || 'Download failed'));
+              }
+            });
+          });
+
+          // Cleanup
+          document.body.removeChild(container);
+
+        } catch (err) {
+          console.warn('Failed to export comment:', err.message);
+          failCount++;
+        }
+
+        // Brief pause every 10 comments to prevent overwhelming browser
+        if (exportedCount % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+    }
+
+    // Done
+    if (failCount === 0) {
+      alert(`Successfully exported ${exportedCount} comment screenshots for @${targetUsername}!`);
+    } else {
+      alert(`Exported ${exportedCount - failCount} comment screenshots for @${targetUsername}.\n${failCount} failed.`);
+    }
+
+  } catch (error) {
+    console.error('Bulk export failed:', error);
+    alert('Export failed: ' + error.message);
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
+  }
+}
+
+// Export all comments for all accounts
+async function bulkExportCommentsForAllAccounts(accountsWithComments) {
+  const btn = bulkExportCommentsBtn;
+  const originalText = btn.textContent;
+  btn.disabled = true;
+
+  const accountNames = Object.keys(accountsWithComments);
+  let totalExported = 0;
+  let totalFailed = 0;
+
+  try {
+    for (let i = 0; i < accountNames.length; i++) {
+      const username = accountNames[i];
+      btn.textContent = `💬 Account ${i + 1}/${accountNames.length}: @${username}...`;
+
+      // Use the single account export function but track results
+      await bulkExportCommentsForAccountSilent(username, (exported, failed) => {
+        totalExported += exported;
+        totalFailed += failed;
+      });
+    }
+
+    alert(`Bulk export complete!\n\nExported ${totalExported} comment screenshots from ${accountNames.length} accounts.${totalFailed > 0 ? `\n${totalFailed} failed.` : ''}`);
+
+  } catch (error) {
+    console.error('Bulk export all failed:', error);
+    alert('Export failed: ' + error.message);
+  } finally {
+    btn.textContent = originalText;
+    btn.disabled = false;
+  }
+}
+
+// Silent version of bulk export for multi-account export
+async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
+  let exportedCount = 0;
+  let failCount = 0;
+
+  try {
+    const accountPosts = posts.filter(p =>
+      (p.username || 'unknown') === targetUsername &&
+      p.comments &&
+      p.comments.length > 0
+    );
+
+    for (const post of accountPosts) {
+      const allComments = [];
+      function collectComments(comments, depth = 0) {
+        for (const comment of comments) {
+          allComments.push({ comment, depth });
+          if (comment.replies && comment.replies.length > 0) {
+            collectComments(comment.replies, depth + 1);
+          }
+        }
+      }
+      collectComments(post.comments);
+
+      const folderName = buildFilePrefix(post);
+      const basePath = `Instagram/${targetUsername}/${folderName}/comments/screenshots`;
+      const avatarCache = { ...(post.avatars || {}) };
+
+      // Pre-fetch avatars
+      const avatarsToFetch = new Map();
+      for (const { comment } of allComments) {
+        const commenter = comment.owner?.username || comment.user?.username || comment.username || 'unknown';
+        if (!avatarCache[commenter]) {
+          const avatarUrl = comment.owner?.profile_pic_url || comment.user?.profile_pic_url || comment.profile_pic_url;
+          if (avatarUrl && !avatarUrl.startsWith('data:')) {
+            avatarsToFetch.set(commenter, avatarUrl);
+          }
+        }
+      }
+
+      if (avatarsToFetch.size > 0) {
+        const results = await Promise.all(
+          Array.from(avatarsToFetch.entries()).map(async ([commenter, url]) => {
+            const base64 = await prefetchAvatarAsBase64(url);
+            return [commenter, base64];
+          })
+        );
+        for (const [commenter, base64] of results) {
+          if (base64) avatarCache[commenter] = base64;
+        }
+      }
+
+      for (let i = 0; i < allComments.length; i++) {
+        const { comment } = allComments[i];
+        const commenter = comment.owner?.username || comment.user?.username || comment.username || 'unknown';
+
+        try {
+          const tempCommentEl = createTempCommentElement(comment, post, avatarCache);
+          const container = createCommentScreenshotContainer(tempCommentEl, post, avatarCache);
+          document.body.appendChild(container);
+
+          const images = container.querySelectorAll('img');
+          await Promise.all(Array.from(images).map(img => {
+            if (img.complete) return Promise.resolve();
+            return new Promise(resolve => {
+              img.onload = resolve;
+              img.onerror = resolve;
+            });
+          }));
+
+          await new Promise(resolve => setTimeout(resolve, 50));
+
+          const screenshotComment = container.querySelector('.screenshot-comment');
+          const canvas = await html2canvas(screenshotComment, {
+            backgroundColor: '#ffffff',
+            scale: 2,
+            useCORS: true,
+            allowTaint: true
+          });
+
+          const commentId = comment.pk || comment.id || `${i + 1}`;
+          const filename = `${basePath}/${commenter}_${commentId}.jpg`;
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+
+          await new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage({
+              action: 'downloadCommentScreenshot',
+              dataUrl: dataUrl,
+              filename: filename
+            }, response => {
+              if (response?.success) resolve();
+              else reject(new Error(response?.error || 'Download failed'));
+            });
+          });
+
+          document.body.removeChild(container);
+          exportedCount++;
+
+        } catch (err) {
+          failCount++;
+        }
+
+        if ((exportedCount + failCount) % 10 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Silent bulk export failed:', error);
+  }
+
+  if (onComplete) {
+    onComplete(exportedCount, failCount);
+  }
+}
