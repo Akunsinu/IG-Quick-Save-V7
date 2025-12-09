@@ -526,6 +526,33 @@ async function captureMobileScreenshot(tab) {
     // Wait for page to load
     await new Promise(resolve => setTimeout(resolve, 3000));
 
+    // Click "more" button to expand bio if present
+    try {
+      await chrome.debugger.sendCommand(debuggeeId, 'Runtime.evaluate', {
+        expression: `
+          (function() {
+            // Find the "more" span in the bio section
+            const moreButtons = document.querySelectorAll('span');
+            for (const span of moreButtons) {
+              if (span.textContent.trim().toLowerCase() === 'more' &&
+                  span.closest('section') &&
+                  span.closest('header')) {
+                span.click();
+                return 'clicked';
+              }
+            }
+            return 'not found';
+          })()
+        `,
+        returnByValue: true
+      });
+      console.log('[Background] Clicked "more" button to expand bio');
+      // Wait for bio to expand
+      await new Promise(resolve => setTimeout(resolve, 500));
+    } catch (e) {
+      console.log('[Background] No "more" button found or click failed:', e.message);
+    }
+
     // Capture screenshot using debugger (gives us the emulated view)
     // Crop to 1179 × 2161 to show only the top 6 posts (cropping bottom)
     const result = await chrome.debugger.sendCommand(debuggeeId, 'Page.captureScreenshot', {
