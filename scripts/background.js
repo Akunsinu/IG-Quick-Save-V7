@@ -501,6 +501,10 @@ async function captureMobileScreenshot(tab) {
     await chrome.debugger.attach(debuggeeId, '1.3');
     console.log('[Background] Debugger attached for mobile screenshot');
 
+    // Enable required domains
+    await chrome.debugger.sendCommand(debuggeeId, 'Page.enable', {});
+    await chrome.debugger.sendCommand(debuggeeId, 'Runtime.enable', {});
+
     // Enable Emulation domain
     await chrome.debugger.sendCommand(debuggeeId, 'Emulation.setDeviceMetricsOverride', {
       width: IPHONE_WIDTH,
@@ -528,29 +532,37 @@ async function captureMobileScreenshot(tab) {
 
     // Click "more" button to expand bio if present
     try {
-      await chrome.debugger.sendCommand(debuggeeId, 'Runtime.evaluate', {
+      const clickResult = await chrome.debugger.sendCommand(debuggeeId, 'Runtime.evaluate', {
         expression: `
           (function() {
-            // Find the "more" span in the bio section
-            const moreButtons = document.querySelectorAll('span');
-            for (const span of moreButtons) {
-              if (span.textContent.trim().toLowerCase() === 'more' &&
-                  span.closest('section') &&
-                  span.closest('header')) {
-                span.click();
-                return 'clicked';
+            try {
+              // Find the "more" span in the bio section
+              const spans = document.querySelectorAll('span');
+              for (const span of spans) {
+                const text = span.textContent.trim().toLowerCase();
+                if (text === 'more') {
+                  // Check if it's in the profile header area
+                  const header = span.closest('header');
+                  if (header) {
+                    span.click();
+                    return 'clicked';
+                  }
+                }
               }
+              return 'not found';
+            } catch (err) {
+              return 'error: ' + err.message;
             }
-            return 'not found';
           })()
         `,
         returnByValue: true
       });
-      console.log('[Background] Clicked "more" button to expand bio');
+      console.log('[Background] Bio expand result:', clickResult?.result?.value);
       // Wait for bio to expand
       await new Promise(resolve => setTimeout(resolve, 500));
     } catch (e) {
-      console.log('[Background] No "more" button found or click failed:', e.message);
+      console.warn('[Background] Bio expand attempt failed:', e.message);
+      // Continue anyway - don't let this break the screenshot
     }
 
     // Capture screenshot using debugger (gives us the emulated view)
