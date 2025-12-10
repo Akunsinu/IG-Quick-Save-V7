@@ -1948,7 +1948,94 @@ function createCommentScreenshotContainer(commentEl, post, avatarCache = null) {
   return container;
 }
 
+// Find a comment object by its ID path (e.g., "5" or "3-2" for reply)
+function findCommentById(comments, commentId) {
+  const parts = commentId.split('-').map(Number);
+  let current = comments[parts[0]];
+
+  if (!current) return null;
+
+  // Navigate to nested reply if needed
+  for (let i = 1; i < parts.length; i++) {
+    if (!current.replies || !current.replies[parts[i]]) {
+      return null;
+    }
+    current = current.replies[parts[i]];
+  }
+
+  return current;
+}
+
+// Get the flat index of a comment (for filename numbering)
+function getFlatCommentIndex(comments, commentId) {
+  const parts = commentId.split('-').map(Number);
+  let index = 0;
+
+  // Count all comments before this one (flattened)
+  function countBefore(commentList, targetParts, depth = 0) {
+    for (let i = 0; i < commentList.length; i++) {
+      if (depth === 0 && i === targetParts[0] && targetParts.length === 1) {
+        // Found the target at top level
+        return index;
+      }
+
+      if (depth === 0 && i === targetParts[0] && targetParts.length > 1) {
+        // Target is in replies of this comment
+        index++; // Count this comment
+        if (commentList[i].replies) {
+          return countBefore(commentList[i].replies, targetParts.slice(1), depth + 1);
+        }
+      }
+
+      if (depth > 0 && i === targetParts[0] && targetParts.length === 1) {
+        // Found nested target
+        return index;
+      }
+
+      if (depth > 0 && i === targetParts[0] && targetParts.length > 1) {
+        index++;
+        if (commentList[i].replies) {
+          return countBefore(commentList[i].replies, targetParts.slice(1), depth + 1);
+        }
+      }
+
+      // Count this comment and all its replies
+      index++;
+      if (commentList[i].replies) {
+        index += countAllComments(commentList[i].replies);
+      }
+
+      if (depth === 0 && i < targetParts[0]) {
+        continue;
+      }
+    }
+    return index;
+  }
+
+  // Simpler approach: flatten and find
+  const allComments = [];
+  function flatten(commentList) {
+    for (const comment of commentList) {
+      allComments.push(comment);
+      if (comment.replies && comment.replies.length > 0) {
+        flatten(comment.replies);
+      }
+    }
+  }
+  flatten(comments);
+
+  const targetComment = findCommentById(comments, commentId);
+  if (targetComment) {
+    const foundIndex = allComments.indexOf(targetComment);
+    if (foundIndex !== -1) return foundIndex;
+  }
+
+  // Fallback to parsing the ID
+  return parts[0];
+}
+
 // Export individual comment screenshot
+// Uses the same logic as exportAllComments for consistency
 async function exportCommentScreenshot(commentEl) {
   const post = posts[currentPostIndex];
   if (!post) {
@@ -1965,9 +2052,55 @@ async function exportCommentScreenshot(commentEl) {
   }
 
   try {
-    // Create screenshot container
-    const container = createCommentScreenshotContainer(commentEl, post);
+    // Get comment ID and find the actual comment object from post.comments
+    // This avoids DOM data-attribute limitations for large comments
+    const commentId = commentEl.dataset.commentId || '0';
+    const comment = findCommentById(post.comments, commentId);
+
+    if (!comment) {
+      throw new Error('Comment not found in post data');
+    }
+
+    // Get flat index for filename
+    const commentIndex = getFlatCommentIndex(post.comments, commentId);
+
+    // Build avatar cache - start with post.avatars, then prefetch if needed
+    const avatarCache = { ...(post.avatars || {}) };
+
+    const commenter = comment.owner?.username ||
+                      comment.user?.username ||
+                      comment.username ||
+                      'unknown';
+
+    // Prefetch avatar if not already cached
+    if (!avatarCache[commenter]) {
+      const avatarUrl = comment.owner?.profile_pic_url ||
+                        comment.user?.profile_pic_url ||
+                        comment.profile_pic_url;
+      if (avatarUrl && !avatarUrl.startsWith('data:')) {
+        const base64 = await prefetchAvatarAsBase64(avatarUrl);
+        if (base64) {
+          avatarCache[commenter] = base64;
+        }
+      }
+    }
+
+    // Create temp element using the same function as batch export
+    const tempCommentEl = createTempCommentElement(comment, post, avatarCache);
+
+    // Create screenshot container with avatar cache
+    const container = createCommentScreenshotContainer(tempCommentEl, post, avatarCache);
     document.body.appendChild(container);
+
+    // Wait for any images to load
+    const images = container.querySelectorAll('img');
+    await Promise.all(Array.from(images).map(img => {
+      if (img.complete) return Promise.resolve();
+      return new Promise(resolve => {
+        img.onload = resolve;
+        img.onerror = resolve;
+      });
+    }));
 
     // Small delay for rendering
     await new Promise(resolve => setTimeout(resolve, 150));
@@ -1982,19 +2115,7 @@ async function exportCommentScreenshot(commentEl) {
     });
 
     // Build filename using unified format
-    // Get comment index from data attribute and find the comment object
-    const commentId = commentEl.dataset.commentId || '0';
-    const commentIndex = parseInt(commentId.split('-')[0]) || 0; // Handle replies like "0-1"
-    const timestamp = parseInt(commentEl.dataset.timestamp) || 0;
-    const commenter = commentEl.dataset.commenter || 'unknown';
-
-    // Create a minimal comment object for the filename builder
-    const commentObj = {
-      created_at: timestamp,
-      owner: { username: commenter }
-    };
-
-    const filename = buildCommentFilename(post, commentObj, commentIndex) + '.png';
+    const filename = buildCommentFilename(post, comment, commentIndex) + '.png';
 
     // Download
     const link = document.createElement('a');

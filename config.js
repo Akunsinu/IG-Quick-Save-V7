@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '7.6.0',
-  VERSION_NAME: 'V7.6 - Account Picker & Bulk Comment Export',
+  VERSION: '7.7.1',
+  VERSION_NAME: 'V7.7.1 - Unified Comment Screenshot Export',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================
