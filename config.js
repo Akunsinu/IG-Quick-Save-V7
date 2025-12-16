@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '7.7.1',
-  VERSION_NAME: 'V7.7.1 - Unified Comment Screenshot Export',
+  VERSION: '8.0.0',
+  VERSION_NAME: 'V8.0.0 - Persistent Side Panel UI',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================

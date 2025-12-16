@@ -9,8 +9,29 @@ let currentData = {
   media: null
 };
 
-// Track connected popup ports for progress messages
+// Track connected popup/sidepanel ports for progress messages
 let activePopupPort = null;
+let activeSidePanelPort = null;
+
+// Helper function to broadcast messages to both popup and sidepanel
+function broadcastToUI(message) {
+  if (activePopupPort) {
+    try {
+      activePopupPort.postMessage(message);
+    } catch (e) {
+      console.log('[Background] Error sending to popup:', e);
+      activePopupPort = null;
+    }
+  }
+  if (activeSidePanelPort) {
+    try {
+      activeSidePanelPort.postMessage(message);
+    } catch (e) {
+      console.log('[Background] Error sending to sidepanel:', e);
+      activeSidePanelPort = null;
+    }
+  }
+}
 
 // Batch processing state
 let batchState = {
@@ -309,43 +330,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.type === 'MEDIA_RESPONSE') {
     currentData.media = message.data;
   } else if (message.type === 'EXTRACTION_PROGRESS') {
-    // Forward progress messages to the connected popup
-    if (activePopupPort) {
-      activePopupPort.postMessage({
-        type: 'progress',
-        message: message.message
-      });
-    }
+    // Forward progress messages to the connected popup/sidepanel
+    broadcastToUI({
+      type: 'progress',
+      message: message.message
+    });
   } else if (message.type === 'profileScrapeProgress') {
-    // Forward profile scrape progress to popup
-    console.log('[Background] Profile scrape progress received, activePopupPort:', !!activePopupPort);
-    if (activePopupPort) {
-      activePopupPort.postMessage({
-        type: 'profileScrapeProgress',
-        data: message.data
-      });
-    }
+    // Forward profile scrape progress to popup/sidepanel
+    console.log('[Background] Profile scrape progress received');
+    broadcastToUI({
+      type: 'profileScrapeProgress',
+      data: message.data
+    });
   } else if (message.type === 'profileScrapeComplete') {
-    // Forward profile scrape complete to popup
-    console.log('[Background] Profile scrape COMPLETE received, activePopupPort:', !!activePopupPort, 'posts:', message.data?.count);
-    if (activePopupPort) {
-      activePopupPort.postMessage({
-        type: 'profileScrapeComplete',
-        data: message.data
-      });
-      console.log('[Background] Forwarded profileScrapeComplete to popup');
-    } else {
-      console.warn('[Background] No activePopupPort to forward profileScrapeComplete!');
-    }
+    // Forward profile scrape complete to popup/sidepanel
+    console.log('[Background] Profile scrape COMPLETE received, posts:', message.data?.count);
+    broadcastToUI({
+      type: 'profileScrapeComplete',
+      data: message.data
+    });
+    console.log('[Background] Forwarded profileScrapeComplete to UI');
   } else if (message.type === 'profileChunkPause') {
-    // Forward chunk pause to popup
+    // Forward chunk pause to popup/sidepanel
     console.log('[Background] Profile chunk pause received, posts:', message.data?.count);
-    if (activePopupPort) {
-      activePopupPort.postMessage({
-        type: 'profileChunkPause',
-        data: message.data
-      });
-    }
+    broadcastToUI({
+      type: 'profileChunkPause',
+      data: message.data
+    });
     // Also save state to storage
     if (message.data) {
       saveProfileScrapingState({
@@ -356,23 +367,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       });
     }
   } else if (message.type === 'profileResumed') {
-    // Forward resumed to popup
+    // Forward resumed to popup/sidepanel
     console.log('[Background] Profile resumed');
-    if (activePopupPort) {
-      activePopupPort.postMessage({
-        type: 'profileResumed',
-        data: message.data
-      });
-    }
+    broadcastToUI({
+      type: 'profileResumed',
+      data: message.data
+    });
   } else if (message.type === 'profileRateLimited') {
-    // Forward rate limited to popup
+    // Forward rate limited to popup/sidepanel
     console.log('[Background] Profile rate limited:', message.data?.errorStatus);
-    if (activePopupPort) {
-      activePopupPort.postMessage({
-        type: 'profileRateLimited',
-        data: message.data
-      });
-    }
+    broadcastToUI({
+      type: 'profileRateLimited',
+      data: message.data
+    });
     // Also save state to storage
     if (message.data) {
       saveProfileScrapingState({
@@ -1240,15 +1247,25 @@ async function downloadHTML(htmlContent, filename, saveAs = false) {
 
 // Expose API for popup
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === 'popup') {
-    // Store the active popup port for progress messages
-    activePopupPort = port;
-    console.log('[Background] Popup connected, progress messages enabled');
+  if (port.name === 'popup' || port.name === 'sidepanel') {
+    // Store the active port for progress messages (popup or sidepanel)
+    if (port.name === 'popup') {
+      activePopupPort = port;
+      console.log('[Background] Popup connected, progress messages enabled');
+    } else {
+      activeSidePanelPort = port;
+      console.log('[Background] Side panel connected, progress messages enabled');
+    }
 
-    // Clear the port reference when popup disconnects
+    // Clear the port reference when disconnected
     port.onDisconnect.addListener(() => {
-      activePopupPort = null;
-      console.log('[Background] Popup disconnected, progress messages disabled');
+      if (port.name === 'popup') {
+        activePopupPort = null;
+        console.log('[Background] Popup disconnected, progress messages disabled');
+      } else {
+        activeSidePanelPort = null;
+        console.log('[Background] Side panel disconnected, progress messages disabled');
+      }
     });
 
     port.onMessage.addListener(async (msg) => {
@@ -1270,12 +1287,10 @@ chrome.runtime.onConnect.addListener((port) => {
           const filePrefix = buildFilePrefix(postInfo);
 
           // Send progress message
-          if (activePopupPort) {
-            activePopupPort.postMessage({
-              type: 'progress',
-              message: `⬇️ Downloading ${media.length} media files...`
-            });
-          }
+          broadcastToUI({
+            type: 'progress',
+            message: `⬇️ Downloading ${media.length} media files...`
+          });
 
           for (let i = 0; i < media.length; i++) {
             const item = media[i];
@@ -1286,12 +1301,10 @@ chrome.runtime.onConnect.addListener((port) => {
             const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
 
             // Send progress for each file
-            if (activePopupPort) {
-              activePopupPort.postMessage({
-                type: 'progress',
-                message: `⬇️ Downloading media ${i + 1}/${media.length}...`
-              });
-            }
+            broadcastToUI({
+              type: 'progress',
+              message: `⬇️ Downloading media ${i + 1}/${media.length}...`
+            });
 
             try {
               // Only prompt saveAs for the first file
@@ -1398,24 +1411,20 @@ chrome.runtime.onConnect.addListener((port) => {
           const filePrefix = buildFilePrefix(postInfo);
 
           // Send initial progress
-          if (activePopupPort) {
-            activePopupPort.postMessage({
-              type: 'progress',
-              message: '📦 Starting complete download...'
-            });
-          }
+          broadcastToUI({
+            type: 'progress',
+            message: '📦 Starting complete download...'
+          });
 
           // Download media
           if (currentData.media && currentData.media.media) {
             const folderPrefix = `Instagram/${username}/${folderName}/media`;
             const mediaCount = currentData.media.media.length;
 
-            if (activePopupPort) {
-              activePopupPort.postMessage({
-                type: 'progress',
-                message: `⬇️ Downloading ${mediaCount} media files...`
-              });
-            }
+            broadcastToUI({
+              type: 'progress',
+              message: `⬇️ Downloading ${mediaCount} media files...`
+            });
 
             for (let i = 0; i < mediaCount; i++) {
               const item = currentData.media.media[i];
@@ -1423,12 +1432,10 @@ chrome.runtime.onConnect.addListener((port) => {
               const extension = getFileExtension(url, !!item.video_url);
               const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
 
-              if (activePopupPort) {
-                activePopupPort.postMessage({
-                  type: 'progress',
-                  message: `⬇️ Downloading media ${i + 1}/${mediaCount}...`
-                });
-              }
+              broadcastToUI({
+                type: 'progress',
+                message: `⬇️ Downloading media ${i + 1}/${mediaCount}...`
+              });
 
               // Only prompt saveAs for the first file
               await downloadFile(url, filename, saveAs && i === 0);
@@ -1437,12 +1444,10 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Download comments as JSON and CSV
           if (currentData.comments && currentData.comments.comments) {
-            if (activePopupPort) {
-              activePopupPort.postMessage({
-                type: 'progress',
-                message: '💾 Saving comments as JSON and CSV...'
-              });
-            }
+            broadcastToUI({
+              type: 'progress',
+              message: '💾 Saving comments as JSON and CSV...'
+            });
 
             const jsonFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.json`;
             await downloadJSON(currentData.comments, jsonFilename, false);
@@ -1454,12 +1459,10 @@ chrome.runtime.onConnect.addListener((port) => {
           }
 
           // Download post metadata
-          if (activePopupPort) {
-            activePopupPort.postMessage({
-              type: 'progress',
-              message: '📝 Saving post metadata...'
-            });
-          }
+          broadcastToUI({
+            type: 'progress',
+            message: '📝 Saving post metadata...'
+          });
 
           const metadata = {
             ...postInfo,
@@ -1471,12 +1474,10 @@ chrome.runtime.onConnect.addListener((port) => {
           await downloadJSON(metadata, metadataFilename, false);
 
           // Download HTML archive
-          if (activePopupPort) {
-            activePopupPort.postMessage({
-              type: 'progress',
-              message: '🌐 Generating HTML archive...'
-            });
-          }
+          broadcastToUI({
+            type: 'progress',
+            message: '🌐 Generating HTML archive...'
+          });
 
           const htmlContent = await generatePostHTML(currentData, filePrefix);
           const htmlFilename = `Instagram/${username}/${folderName}/${filePrefix}_archive.html`;
@@ -1484,12 +1485,10 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Capture Instagram-style screenshot
           try {
-            if (activePopupPort) {
-              activePopupPort.postMessage({
-                type: 'progress',
-                message: '📸 Rendering screenshot...'
-              });
-            }
+            broadcastToUI({
+              type: 'progress',
+              message: '📸 Rendering screenshot...'
+            });
 
             const media = currentData.media?.media?.[0];
             if (media) {
@@ -2378,3 +2377,60 @@ if (typeof SheetsSync !== 'undefined') {
     console.error('[Background] SheetsSync init error:', error);
   });
 }
+
+// ===== SIDE PANEL API =====
+
+// Enable side panel on Instagram tabs
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  // Only process when page fully loads and URL is available
+  if (changeInfo.status === 'complete' && tab.url) {
+    const isInstagram = tab.url.includes('instagram.com');
+
+    try {
+      await chrome.sidePanel.setOptions({
+        tabId,
+        path: 'sidepanel.html',
+        enabled: isInstagram
+      });
+
+      if (isInstagram) {
+        console.log('[Background] Side panel enabled for Instagram tab:', tabId);
+      }
+    } catch (error) {
+      // sidePanel API may not be available in older Chrome versions
+      console.log('[Background] Could not set side panel options:', error.message);
+    }
+  }
+});
+
+// Handle extension icon click - open side panel on Instagram, popup elsewhere
+chrome.action.onClicked.addListener(async (tab) => {
+  const isInstagram = tab.url?.includes('instagram.com');
+
+  if (isInstagram) {
+    try {
+      await chrome.sidePanel.open({ tabId: tab.id });
+      console.log('[Background] Opened side panel for Instagram tab');
+    } catch (error) {
+      console.log('[Background] Could not open side panel:', error.message);
+    }
+  }
+  // For non-Instagram tabs, the default popup will open automatically
+});
+
+// Message handler for opening side panel from popup
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'openSidePanel') {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs[0]) {
+        try {
+          await chrome.sidePanel.open({ tabId: tabs[0].id });
+          sendResponse({ success: true });
+        } catch (error) {
+          sendResponse({ success: false, error: error.message });
+        }
+      }
+    });
+    return true; // Keep channel open for async response
+  }
+});

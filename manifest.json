@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "IG Quick Save V7.7.1",
-  "version": "7.7.1",
+  "name": "IG Quick Save V8.0.0",
+  "version": "8.0.0",
   "description": "Download media and comments from Instagram posts and profiles - with Team Sync, Resume, Profile Scraping, Folder Scanning & Archive Viewer",
   "permissions": [
     "activeTab",
@@ -9,8 +9,12 @@
     "storage",
     "offscreen",
     "tabs",
-    "debugger"
+    "debugger",
+    "sidePanel"
   ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
   "host_permissions": [
     "https://www.instagram.com/*",
     "https://script.google.com/*",

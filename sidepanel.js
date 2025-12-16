@@ -1,11 +1,16 @@
-// Popup script
-console.log('[Popup] ====== POPUP.JS LOADED ======');
+// Side Panel script - persistent version of popup
+// Key difference: uses 'sidepanel' port name and listens for tab changes
+console.log('[SidePanel] ====== SIDEPANEL.JS LOADED ======');
 let port = null;
 let currentShortcode = null;
 let extractedData = {
   media: null,
   comments: null
 };
+
+// Track current tab for detecting navigation
+let currentTabId = null;
+let currentTabUrl = null;
 
 // Password protection (using CONFIG)
 const passwordScreen = document.getElementById('passwordScreen');
@@ -30,30 +35,6 @@ const downloadCsvBtn = document.getElementById('downloadCsvBtn');
 const downloadHtmlBtn = document.getElementById('downloadHtmlBtn');
 const downloadScreenshotBtn = document.getElementById('downloadScreenshotBtn');
 const askWhereToSaveCheckbox = document.getElementById('askWhereToSave');
-const openSidePanelBtn = document.getElementById('openSidePanel');
-
-// Side panel button handler
-if (openSidePanelBtn) {
-  openSidePanelBtn.addEventListener('click', async () => {
-    try {
-      // Send message to background to open side panel
-      const response = await chrome.runtime.sendMessage({ action: 'openSidePanel' });
-      if (response && response.success) {
-        // Close the popup after opening side panel
-        window.close();
-      } else {
-        console.log('[Popup] Could not open side panel:', response?.error);
-        // Show tooltip or feedback
-        openSidePanelBtn.textContent = '⚠️ Unavailable';
-        setTimeout(() => {
-          openSidePanelBtn.textContent = '📌 Pin to Side';
-        }, 2000);
-      }
-    } catch (error) {
-      console.error('[Popup] Error opening side panel:', error);
-    }
-  });
-}
 
 // Initialize password hash on first run
 async function initializePassword() {
@@ -137,13 +118,13 @@ passwordInput.addEventListener('input', () => {
   passwordError.classList.add('hidden');
 });
 
-// Check authentication on popup load
+// Check authentication on sidepanel load
 checkAuthentication();
 
 // Initialize
 async function init() {
-  // Connect to background script
-  port = chrome.runtime.connect({ name: 'popup' });
+  // Connect to background script with 'sidepanel' port name
+  port = chrome.runtime.connect({ name: 'sidepanel' });
 
   port.onMessage.addListener((msg) => {
     if (msg.type === 'success') {
@@ -162,27 +143,27 @@ async function init() {
     } else if (msg.type === 'batchStopped') {
       handleBatchStopped(msg.data);
     } else if (msg.type === 'profileScrapeProgress') {
-      console.log('[Popup] Received profileScrapeProgress:', msg.data);
+      console.log('[SidePanel] Received profileScrapeProgress:', msg.data);
       handleProfileScrapeProgress(msg.data);
     } else if (msg.type === 'profileScrapeComplete') {
-      console.log('[Popup] Received profileScrapeComplete:', msg.data);
+      console.log('[SidePanel] Received profileScrapeComplete:', msg.data);
       handleProfileScrapeComplete(msg.data);
     } else if (msg.type === 'profileChunkPause') {
-      console.log('[Popup] Received profileChunkPause:', msg.data);
+      console.log('[SidePanel] Received profileChunkPause:', msg.data);
       handleProfileChunkPause(msg.data);
     } else if (msg.type === 'profileResumed') {
-      console.log('[Popup] Received profileResumed:', msg.data);
+      console.log('[SidePanel] Received profileResumed:', msg.data);
       handleProfileResumed(msg.data);
     } else if (msg.type === 'profileRateLimited') {
-      console.log('[Popup] Received profileRateLimited:', msg.data);
+      console.log('[SidePanel] Received profileRateLimited:', msg.data);
       handleProfileRateLimited(msg.data);
     } else if (msg.type === 'savedProfileScrapeState') {
-      console.log('[Popup] Received savedProfileScrapeState:', msg.data);
+      console.log('[SidePanel] Received savedProfileScrapeState:', msg.data);
       handleSavedProfileScrapeState(msg.data);
     } else if (msg.type === 'profileScrapingStateSaved') {
-      console.log('[Popup] Profile scraping state saved');
+      console.log('[SidePanel] Profile scraping state saved');
     } else if (msg.type === 'profileScrapingStateCleared') {
-      console.log('[Popup] Profile scraping state cleared');
+      console.log('[SidePanel] Profile scraping state cleared');
     } else if (msg.type === 'downloadStats') {
       // Update download history count when it changes
       if (typeof msg.data.count === 'number') {
@@ -202,17 +183,17 @@ async function init() {
       handleDownloadSourceStats(msg.data);
     } else if (msg.type === 'folderScanUpdated') {
       // Folder scan completed
-      console.log('[Popup] Folder scan updated:', msg.data);
+      console.log('[SidePanel] Folder scan updated:', msg.data);
     } else if (msg.type === 'folderScanStats') {
       // Folder scan stats loaded
       handleFolderScanStats(msg.data);
     } else if (msg.type === 'profileScreenshotCaptured') {
       // Profile screenshot captured
       if (msg.data.success) {
-        console.log('[Popup] Profile screenshot saved:', msg.data.filename);
+        console.log('[SidePanel] Profile screenshot saved:', msg.data.filename);
         showStatus('success', '📸 Profile screenshot saved!');
       } else {
-        console.error('[Popup] Profile screenshot failed:', msg.data.error);
+        console.error('[SidePanel] Profile screenshot failed:', msg.data.error);
         showStatus('warning', '📸 Screenshot failed: ' + msg.data.error);
       }
     }
@@ -224,35 +205,117 @@ async function init() {
   });
 
   port.onDisconnect.addListener(() => {
-    console.log('[Popup] Port disconnected!');
+    console.log('[SidePanel] Port disconnected!');
   });
 
-  // Check if we're on a post or reel page
+  // Get current tab and check page type
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  currentTabId = tab.id;
+  currentTabUrl = tab.url;
 
-  const isPost = tab.url.includes('instagram.com/p/');
-  const isReel = tab.url.includes('instagram.com/reel/');
-  const isReels = tab.url.includes('instagram.com/reels/');
+  // Check page type and update UI
+  checkCurrentPage(tab.url);
 
-  if (!isPost && !isReel && !isReels) {
-    showStatus('warning', '⚠️ Please open an Instagram post or reel to use this extension');
+  // Request any previously extracted data from background
+  port.postMessage({ action: 'getCurrentData' });
+
+  // Set up tab change listener for side panel persistence
+  setupTabListeners();
+}
+
+// Set up listeners to detect when user navigates to different pages
+function setupTabListeners() {
+  // Listen for tab activation changes (user switches tabs)
+  chrome.tabs.onActivated.addListener(async (activeInfo) => {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    currentTabId = tab.id;
+    currentTabUrl = tab.url;
+    console.log('[SidePanel] Tab activated:', tab.url);
+    checkCurrentPage(tab.url);
+
+    // Reset extracted data when switching tabs
+    extractedData = { media: null, comments: null };
+    statsEl.classList.add('hidden');
+    downloadOptionsEl.classList.add('hidden');
+
+    // Request fresh data for new tab
+    if (port) {
+      port.postMessage({ action: 'getCurrentData' });
+    }
+  });
+
+  // Listen for URL changes in current tab (user navigates)
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (tabId === currentTabId && changeInfo.url) {
+      currentTabUrl = changeInfo.url;
+      console.log('[SidePanel] Tab URL changed:', changeInfo.url);
+      checkCurrentPage(changeInfo.url);
+
+      // Reset extracted data when navigating
+      extractedData = { media: null, comments: null };
+      statsEl.classList.add('hidden');
+      downloadOptionsEl.classList.add('hidden');
+    }
+  });
+}
+
+// Check current page and update UI accordingly
+function checkCurrentPage(url) {
+  if (!url) {
+    showStatus('warning', '⚠️ Unable to detect current page');
     extractBtn.disabled = true;
     return;
   }
 
+  const isInstagram = url.includes('instagram.com');
+  const isPost = url.includes('instagram.com/p/');
+  const isReel = url.includes('instagram.com/reel/');
+  const isReels = url.includes('instagram.com/reels/');
+
+  if (!isInstagram) {
+    showStatus('warning', '⚠️ Please open Instagram to use this extension');
+    extractBtn.disabled = true;
+    return;
+  }
+
+  if (!isPost && !isReel && !isReels) {
+    // Check if it's a profile page
+    const isProfilePage = isInstagram &&
+                         !url.includes('/p/') &&
+                         !url.includes('/reel/') &&
+                         !url.includes('/reels/') &&
+                         !url.includes('/explore/') &&
+                         !url.includes('/direct/') &&
+                         !url.includes('/accounts/') &&
+                         !url.includes('/stories/');
+
+    if (isProfilePage) {
+      showStatus('info', '👤 On profile page - Use Profile Download section below');
+      extractBtn.disabled = true;
+      // Auto-expand profile section
+      if (profileContent && profileContent.classList.contains('hidden')) {
+        profileContent.classList.remove('hidden');
+        toggleProfileBtn.textContent = 'Hide';
+        checkProfileStatus();
+      }
+    } else {
+      showStatus('warning', '⚠️ Navigate to a post, reel, or profile to use this extension');
+      extractBtn.disabled = true;
+    }
+    return;
+  }
+
   // Extract shortcode from URL (works for /p/, /reel/, and /reels/)
-  const match = tab.url.match(/\/(p|reel|reels)\/([^\/]+)/);
+  const match = url.match(/\/(p|reel|reels)\/([^\/]+)/);
   if (match) {
     currentShortcode = match[2];
+    extractBtn.disabled = false;
     if (match[1] === 'reel' || match[1] === 'reels') {
       showStatus('info', '🔄 Reel detected - Click Extract to convert to post format');
     } else {
       showStatus('info', `✅ Ready to extract data from this post`);
     }
   }
-
-  // Request any previously extracted data from background
-  port.postMessage({ action: 'getCurrentData' });
 }
 
 // Show status message
@@ -569,8 +632,8 @@ const batchContent = document.getElementById('batchContent');
 const batchUrls = document.getElementById('batchUrls');
 const urlCount = document.getElementById('urlCount');
 const startBatchBtn = document.getElementById('startBatchBtn');
-console.log('[Popup] startBatchBtn element:', startBatchBtn);
-console.log('[Popup] batchUrls element:', batchUrls);
+console.log('[SidePanel] startBatchBtn element:', startBatchBtn);
+console.log('[SidePanel] batchUrls element:', batchUrls);
 const stopBatchBtn = document.getElementById('stopBatchBtn');
 const batchProgress = document.getElementById('batchProgress');
 const batchStatus = document.getElementById('batchStatus');
@@ -633,7 +696,7 @@ toggleBatchBtn.addEventListener('click', () => {
   }
 });
 
-// Load folder scan stats on popup open (so user sees current counts)
+// Load folder scan stats on sidepanel open (so user sees current counts)
 // Use setTimeout to ensure function is defined and DOM elements are ready
 setTimeout(() => loadFolderScanStatsFromStorage(), 100);
 
@@ -645,7 +708,7 @@ async function loadDownloadStats() {
       downloadHistoryCount.textContent = response.count;
     }
   } catch (error) {
-    console.log('[Popup] Error loading download stats:', error);
+    console.log('[SidePanel] Error loading download stats:', error);
   }
 }
 
@@ -662,7 +725,7 @@ function extractShortcodeFromFolderName(folderName) {
   return match ? match[1] : null;
 }
 
-// Open folder scan page in a new tab (File System Access API doesn't work in popups)
+// Open folder scan page in a new tab (File System Access API doesn't work in side panels)
 function openFolderScanPage() {
   chrome.tabs.create({ url: chrome.runtime.getURL('folder-scan.html') });
 }
@@ -729,7 +792,7 @@ function handleFolderScanStats(data) {
   }
 }
 
-// Load folder scan stats directly from storage (called on popup open)
+// Load folder scan stats directly from storage (called on sidepanel open)
 async function loadFolderScanStatsFromStorage() {
   try {
     const result = await chrome.storage.local.get('folderScanCache');
@@ -741,10 +804,10 @@ async function loadFolderScanStatsFromStorage() {
         lastScan: cache.lastScan,
         folderPath: cache.folderPath
       });
-      console.log('[Popup] Loaded folder scan stats from storage:', count, 'shortcodes');
+      console.log('[SidePanel] Loaded folder scan stats from storage:', count, 'shortcodes');
     }
   } catch (e) {
-    console.error('[Popup] Error loading folder scan stats:', e);
+    console.error('[SidePanel] Error loading folder scan stats:', e);
   }
 }
 
@@ -767,7 +830,7 @@ function getSkipSources() {
   };
 }
 
-// Load stats when popup opens
+// Load stats when sidepanel opens
 loadDownloadStats();
 
 // Clear history button
@@ -780,7 +843,7 @@ clearHistoryBtn.addEventListener('click', async () => {
     downloadHistoryCount.textContent = '0';
     showStatus('success', '✅ Download history cleared');
   } catch (error) {
-    console.log('[Popup] Error clearing history:', error);
+    console.log('[SidePanel] Error clearing history:', error);
     showStatus('error', '❌ Failed to clear history');
   }
 });
@@ -913,15 +976,15 @@ function parseUrls(text) {
 }
 
 // Start batch processing
-console.log('[Popup] About to attach startBatchBtn click listener...');
+console.log('[SidePanel] About to attach startBatchBtn click listener...');
 if (startBatchBtn) {
   startBatchBtn.addEventListener('click', () => {
-    console.log('[Popup] Start batch clicked');
-    console.log('[Popup] Raw textarea value:', batchUrls.value);
-    console.log('[Popup] Textarea value length:', batchUrls.value.length);
+    console.log('[SidePanel] Start batch clicked');
+    console.log('[SidePanel] Raw textarea value:', batchUrls.value);
+    console.log('[SidePanel] Textarea value length:', batchUrls.value.length);
 
     const urls = parseUrls(batchUrls.value);
-    console.log('[Popup] Parsed URLs:', urls);
+    console.log('[SidePanel] Parsed URLs:', urls);
 
     if (urls.length === 0) {
       showStatus('error', '❌ No valid Instagram URLs found');
@@ -963,9 +1026,9 @@ if (startBatchBtn) {
 
   showStatus('info', `🚀 Starting batch download of ${urls.length} posts...`);
   });
-  console.log('[Popup] startBatchBtn click listener attached!');
+  console.log('[SidePanel] startBatchBtn click listener attached!');
 } else {
-  console.error('[Popup] startBatchBtn not found!');
+  console.error('[SidePanel] startBatchBtn not found!');
 }
 
 // Stop batch processing
@@ -1113,7 +1176,7 @@ function retryAllFailed() {
     return;
   }
 
-  console.log('[Popup] Retrying all failed URLs:', urlsToRetry.length);
+  console.log('[SidePanel] Retrying all failed URLs:', urlsToRetry.length);
 
   // Clear failed section
   failedSection.classList.add('hidden');
@@ -1136,7 +1199,7 @@ function retryAllFailed() {
 function retrySingleFailed(url) {
   if (!url) return;
 
-  console.log('[Popup] Retrying single URL:', url);
+  console.log('[SidePanel] Retrying single URL:', url);
 
   // Remove from failed list UI immediately
   const item = failedUrls.querySelector(`[data-url="${CSS.escape(url)}"]`);
@@ -1358,7 +1421,7 @@ function handleProfileScrapeComplete(data) {
   collectedProfilePosts = posts || [];
   collectedProfileUsername = username || null; // Store for batch download
 
-  console.log('[Popup] Profile scrape complete, stored', collectedProfilePosts.length, 'posts for @' + collectedProfileUsername);
+  console.log('[SidePanel] Profile scrape complete, stored', collectedProfilePosts.length, 'posts for @' + collectedProfileUsername);
 
   // Update UI
   profileScrapeProgress.classList.add('hidden');
@@ -1464,7 +1527,7 @@ startProfileScrapeBtn.addEventListener('click', async () => {
     });
     showStatus('info', `🔍 Collecting posts from profile...`);
   } catch (error) {
-    console.error('[Popup] Error starting profile scrape:', error);
+    console.error('[SidePanel] Error starting profile scrape:', error);
     showStatus('error', 'Content script not ready. Please refresh the Instagram page and try again.');
     startProfileScrapeBtn.disabled = false;
     stopProfileScrapeBtn.disabled = true;
@@ -1481,14 +1544,14 @@ stopProfileScrapeBtn.addEventListener('click', async () => {
     stopProfileScrapeBtn.disabled = true;
     profileScrapeStatus.textContent = 'Stopping...';
   } catch (error) {
-    console.error('[Popup] Error stopping profile scrape:', error);
+    console.error('[SidePanel] Error stopping profile scrape:', error);
     showStatus('error', 'Failed to stop. Please refresh the page.');
   }
 });
 
 // Download all collected profile posts
 downloadProfilePostsBtn.addEventListener('click', async () => {
-  console.log('[Popup] Download button clicked, collectedProfilePosts:', collectedProfilePosts.length);
+  console.log('[SidePanel] Download button clicked, collectedProfilePosts:', collectedProfilePosts.length);
 
   if (collectedProfilePosts.length === 0) {
     showStatus('error', 'No posts collected yet');
@@ -1512,11 +1575,11 @@ downloadProfilePostsBtn.addEventListener('click', async () => {
   // Convert to URLs
   const urls = collectedProfilePosts.map(p => {
     const url = p.postUrl || `https://www.instagram.com/p/${p.code}/`;
-    console.log('[Popup] Post URL:', url);
+    console.log('[SidePanel] Post URL:', url);
     return url;
   });
 
-  console.log('[Popup] Total URLs to add:', urls.length);
+  console.log('[SidePanel] Total URLs to add:', urls.length);
 
   // Check if team filter is enabled
   const useTeamFilter = filterByTeamToggle && filterByTeamToggle.checked;
@@ -1557,7 +1620,7 @@ if (profileContinueNowBtn) {
       await chrome.tabs.sendMessage(tab.id, { action: 'continueNowProfileScrape' });
       showStatus('info', '▶️ Continuing...');
     } catch (error) {
-      console.error('[Popup] Error sending continueNow:', error);
+      console.error('[SidePanel] Error sending continueNow:', error);
       showStatus('error', 'Failed to continue. Please refresh the page.');
     }
   });
@@ -1575,7 +1638,7 @@ if (profilePauseBtn) {
       }
       showStatus('info', '⏸️ Paused. Progress saved.');
     } catch (error) {
-      console.error('[Popup] Error sending pause:', error);
+      console.error('[SidePanel] Error sending pause:', error);
       showStatus('error', 'Failed to pause. Please refresh the page.');
     }
   });
@@ -1847,7 +1910,7 @@ if (detectPostCountBtn) {
           // Auto-update Google Sheet with detected count
           const username = completionUsername.textContent.replace('@', '');
           if (port && username && username !== 'username') {
-            console.log('[Popup] Auto-updating profile total in Sheets:', username, response.postCount);
+            console.log('[SidePanel] Auto-updating profile total in Sheets:', username, response.postCount);
             port.postMessage({
               action: 'updateProfileTotal',
               data: { username, totalPosts: response.postCount }
@@ -1898,11 +1961,11 @@ async function checkProfileCompletionForSync() {
         // Also try to auto-detect post count from the page
         chrome.tabs.sendMessage(tab.id, { action: 'getProfilePostCount' }, (response) => {
           if (chrome.runtime.lastError) {
-            console.log('[Popup] Could not get post count:', chrome.runtime.lastError.message);
+            console.log('[SidePanel] Could not get post count:', chrome.runtime.lastError.message);
             return;
           }
           if (response && response.success && response.postCount) {
-            console.log('[Popup] Auto-detected post count:', response.postCount);
+            console.log('[SidePanel] Auto-detected post count:', response.postCount);
             // Auto-fill the input if it's empty or different
             if (profileTotalInput && (!profileTotalInput.value || parseInt(profileTotalInput.value) !== response.postCount)) {
               profileTotalInput.value = response.postCount;
@@ -1913,7 +1976,7 @@ async function checkProfileCompletionForSync() {
 
               // Auto-update the Google Sheet with detected count
               if (port && username) {
-                console.log('[Popup] Auto-updating profile total in Sheets:', username, response.postCount);
+                console.log('[SidePanel] Auto-updating profile total in Sheets:', username, response.postCount);
                 port.postMessage({
                   action: 'updateProfileTotal',
                   data: { username, totalPosts: response.postCount }
@@ -1925,7 +1988,7 @@ async function checkProfileCompletionForSync() {
       }
     }
   } catch (error) {
-    console.log('[Popup] Error checking profile completion:', error);
+    console.log('[SidePanel] Error checking profile completion:', error);
   }
 }
 
@@ -1996,7 +2059,7 @@ function handleSyncMessages(msg) {
 
   if (msg.type === 'skipTeamDownloadedSet') {
     if (msg.data.success) {
-      console.log('[Popup] Skip team downloaded preference saved');
+      console.log('[SidePanel] Skip team downloaded preference saved');
     }
   }
 }
