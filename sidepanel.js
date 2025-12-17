@@ -36,6 +36,17 @@ const downloadHtmlBtn = document.getElementById('downloadHtmlBtn');
 const downloadScreenshotBtn = document.getElementById('downloadScreenshotBtn');
 const askWhereToSaveCheckbox = document.getElementById('askWhereToSave');
 
+// Name prompt elements
+const namePromptOverlay = document.getElementById('namePromptOverlay');
+const promptUsernameEl = document.getElementById('promptUsername');
+const realNameInput = document.getElementById('realNameInput');
+const saveNameBtn = document.getElementById('saveNameBtn');
+const skipNameBtn = document.getElementById('skipNameBtn');
+
+// Name prompt state
+let pendingDownloadAction = null; // Stores the download action to execute after name prompt
+let pendingUsername = null;       // Username being prompted for
+
 // Initialize password hash on first run
 async function initializePassword() {
   const result = await chrome.storage.local.get([CONFIG.SECURITY.PASSWORD_STORAGE_KEY]);
@@ -368,6 +379,123 @@ function setButtonLoading(button, loading) {
   }
 }
 
+// ===== NAME PROMPT FUNCTIONS =====
+
+// Check if username has a name mapping, show prompt if not
+async function checkNameBeforeDownload(username, downloadAction) {
+  try {
+    // Use sendMessage for simpler request-response pattern
+    const response = await chrome.runtime.sendMessage({
+      action: 'checkNameMapping',
+      data: { username }
+    });
+
+    if (!response || !response.enabled) {
+      // Team Sync not enabled, proceed without name check
+      return true;
+    }
+
+    if (response.hasMapping) {
+      // Name found, proceed
+      showStatus('success', `✓ ${response.realName}`);
+      return true;
+    } else {
+      // No name found, show prompt
+      showStatus('info', `No name found for @${username}`);
+      return new Promise((resolve) => {
+        showNamePrompt(username, downloadAction, resolve);
+      });
+    }
+  } catch (error) {
+    console.error('[SidePanel] checkNameBeforeDownload error:', error);
+    // On error, proceed with download anyway
+    return true;
+  }
+}
+
+// Show the name prompt modal
+function showNamePrompt(username, downloadAction, resolveCallback) {
+  pendingDownloadAction = { action: downloadAction, resolve: resolveCallback };
+  pendingUsername = username;
+
+  promptUsernameEl.textContent = '@' + username;
+  realNameInput.value = '';
+  namePromptOverlay.classList.remove('hidden');
+  realNameInput.focus();
+}
+
+// Hide the name prompt modal
+function hideNamePrompt() {
+  namePromptOverlay.classList.add('hidden');
+  pendingDownloadAction = null;
+  pendingUsername = null;
+}
+
+// Handle Save Name button
+if (saveNameBtn) {
+  saveNameBtn.addEventListener('click', async () => {
+    const realName = realNameInput.value.trim();
+
+    if (!realName) {
+      realNameInput.style.borderColor = '#ed4956';
+      setTimeout(() => realNameInput.style.borderColor = '#dbdbdb', 2000);
+      return;
+    }
+
+    if (!pendingUsername) return;
+
+    // Save the name mapping
+    saveNameBtn.disabled = true;
+    saveNameBtn.textContent = 'Saving...';
+
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'addNameMapping',
+        data: { username: pendingUsername, realName }
+      });
+
+      saveNameBtn.disabled = false;
+      saveNameBtn.textContent = 'Save & Continue';
+
+      if (result && result.success) {
+        showStatus('success', `✓ Name saved: ${realName}`);
+        hideNamePrompt();
+        if (pendingDownloadAction?.resolve) {
+          pendingDownloadAction.resolve(true);
+        }
+      } else {
+        showStatus('error', result?.error || 'Failed to save name');
+      }
+    } catch (error) {
+      console.error('[SidePanel] Save name error:', error);
+      saveNameBtn.disabled = false;
+      saveNameBtn.textContent = 'Save & Continue';
+      showStatus('error', 'Failed to save name');
+    }
+  });
+}
+
+// Handle Skip button
+if (skipNameBtn) {
+  skipNameBtn.addEventListener('click', () => {
+    hideNamePrompt();
+    if (pendingDownloadAction?.resolve) {
+      pendingDownloadAction.resolve(true); // Continue without name
+    }
+  });
+}
+
+// Handle Enter key in name input
+if (realNameInput) {
+  realNameInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      saveNameBtn?.click();
+    }
+  });
+}
+
+// ===== END NAME PROMPT FUNCTIONS =====
+
 // Extract data from page
 extractBtn.addEventListener('click', async () => {
   setButtonLoading(extractBtn, true);
@@ -611,6 +739,22 @@ downloadScreenshotBtn.addEventListener('click', async () => {
 
 // Download everything
 downloadAllBtn.addEventListener('click', async () => {
+  // Get username from extracted data
+  const username = extractedData.media?.post_info?.username ||
+                   extractedData.comments?.post_info?.username;
+
+  if (username) {
+    // Check for name mapping before download
+    setButtonLoading(downloadAllBtn, true);
+    showStatus('info', '⏳ Checking name mapping...');
+
+    const canProceed = await checkNameBeforeDownload(username, 'downloadAll');
+    if (!canProceed) {
+      setButtonLoading(downloadAllBtn, false);
+      return;
+    }
+  }
+
   setButtonLoading(downloadAllBtn, true);
   showStatus('info', '⏳ Downloading everything...');
 

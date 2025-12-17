@@ -32,6 +32,17 @@ const downloadScreenshotBtn = document.getElementById('downloadScreenshotBtn');
 const askWhereToSaveCheckbox = document.getElementById('askWhereToSave');
 const openSidePanelBtn = document.getElementById('openSidePanel');
 
+// Name prompt elements
+const namePromptOverlay = document.getElementById('namePromptOverlay');
+const promptUsernameEl = document.getElementById('promptUsername');
+const realNameInput = document.getElementById('realNameInput');
+const saveNameBtn = document.getElementById('saveNameBtn');
+const skipNameBtn = document.getElementById('skipNameBtn');
+
+// Name prompt state
+let pendingDownloadAction = null;
+let pendingUsername = null;
+
 // Side panel button handler
 if (openSidePanelBtn) {
   openSidePanelBtn.addEventListener('click', async () => {
@@ -305,6 +316,125 @@ function setButtonLoading(button, loading) {
   }
 }
 
+// ===== NAME PROMPT FUNCTIONS =====
+
+// Check if username has a name mapping, show prompt if not
+async function checkNameBeforeDownload(username, downloadAction) {
+  try {
+    // Use sendMessage for simpler request-response pattern
+    const response = await chrome.runtime.sendMessage({
+      action: 'checkNameMapping',
+      data: { username }
+    });
+
+    console.log('[Popup] checkNameMapping response:', response);
+
+    if (!response || !response.enabled) {
+      // Team Sync not enabled, proceed without name check
+      return true;
+    }
+
+    if (response.hasMapping) {
+      // Name found, proceed
+      showStatus('success', `✓ ${response.realName}`);
+      return true;
+    } else {
+      // No name found, show prompt
+      showStatus('info', `No name found for @${username}`);
+      return new Promise((resolve) => {
+        showNamePrompt(username, downloadAction, resolve);
+      });
+    }
+  } catch (error) {
+    console.error('[Popup] checkNameBeforeDownload error:', error);
+    // On error, proceed with download anyway
+    return true;
+  }
+}
+
+// Show the name prompt modal
+function showNamePrompt(username, downloadAction, resolveCallback) {
+  pendingDownloadAction = { action: downloadAction, resolve: resolveCallback };
+  pendingUsername = username;
+
+  promptUsernameEl.textContent = '@' + username;
+  realNameInput.value = '';
+  namePromptOverlay.classList.remove('hidden');
+  realNameInput.focus();
+}
+
+// Hide the name prompt modal
+function hideNamePrompt() {
+  namePromptOverlay.classList.add('hidden');
+  pendingDownloadAction = null;
+  pendingUsername = null;
+}
+
+// Handle Save Name button
+if (saveNameBtn) {
+  saveNameBtn.addEventListener('click', async () => {
+    const realName = realNameInput.value.trim();
+
+    if (!realName) {
+      realNameInput.style.borderColor = '#ed4956';
+      setTimeout(() => realNameInput.style.borderColor = '#dbdbdb', 2000);
+      return;
+    }
+
+    if (!pendingUsername) return;
+
+    // Save the name mapping
+    saveNameBtn.disabled = true;
+    saveNameBtn.textContent = 'Saving...';
+
+    try {
+      const result = await chrome.runtime.sendMessage({
+        action: 'addNameMapping',
+        data: { username: pendingUsername, realName }
+      });
+
+      saveNameBtn.disabled = false;
+      saveNameBtn.textContent = 'Save & Continue';
+
+      if (result && result.success) {
+        showStatus('success', `✓ Name saved: ${realName}`);
+        hideNamePrompt();
+        if (pendingDownloadAction?.resolve) {
+          pendingDownloadAction.resolve(true);
+        }
+      } else {
+        showStatus('error', result?.error || 'Failed to save name');
+      }
+    } catch (error) {
+      console.error('[Popup] Save name error:', error);
+      saveNameBtn.disabled = false;
+      saveNameBtn.textContent = 'Save & Continue';
+      showStatus('error', 'Failed to save name');
+    }
+  });
+}
+
+// Handle Skip button
+if (skipNameBtn) {
+  skipNameBtn.addEventListener('click', () => {
+    hideNamePrompt();
+    if (pendingDownloadAction?.resolve) {
+      pendingDownloadAction.resolve(true); // Continue without name
+    }
+  });
+}
+
+// Handle Enter key in name input
+if (realNameInput) {
+  realNameInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      saveNameBtn?.click();
+    }
+  });
+}
+
+// ===== END NAME PROMPT FUNCTIONS =====
+
 // Extract data from page
 extractBtn.addEventListener('click', async () => {
   setButtonLoading(extractBtn, true);
@@ -548,6 +678,22 @@ downloadScreenshotBtn.addEventListener('click', async () => {
 
 // Download everything
 downloadAllBtn.addEventListener('click', async () => {
+  // Get username from extracted data
+  const username = extractedData.media?.post_info?.username ||
+                   extractedData.comments?.post_info?.username;
+
+  if (username) {
+    // Check for name mapping before download
+    setButtonLoading(downloadAllBtn, true);
+    showStatus('info', `⏳ Checking name for @${username}...`);
+
+    const canProceed = await checkNameBeforeDownload(username, 'downloadAll');
+    if (!canProceed) {
+      setButtonLoading(downloadAllBtn, false);
+      return; // Name prompt is shown, wait for user action
+    }
+  }
+
   setButtonLoading(downloadAllBtn, true);
   showStatus('info', '⏳ Downloading everything...');
 
@@ -915,53 +1061,59 @@ function parseUrls(text) {
 // Start batch processing
 console.log('[Popup] About to attach startBatchBtn click listener...');
 if (startBatchBtn) {
-  startBatchBtn.addEventListener('click', () => {
+  startBatchBtn.addEventListener('click', async () => {
     console.log('[Popup] Start batch clicked');
-    console.log('[Popup] Raw textarea value:', batchUrls.value);
-    console.log('[Popup] Textarea value length:', batchUrls.value.length);
 
     const urls = parseUrls(batchUrls.value);
-    console.log('[Popup] Parsed URLs:', urls);
 
     if (urls.length === 0) {
       showStatus('error', '❌ No valid Instagram URLs found');
       return;
     }
 
-  // Confirm before starting
-  const confirmed = confirm(`Start batch download for ${urls.length} post${urls.length !== 1 ? 's' : ''}?\n\nThis will take approximately ${Math.ceil(urls.length * 10 / 60)} minutes.`);
-
-  if (!confirmed) {
-    return;
-  }
-
-  // Reset UI
-  batchProgress.classList.remove('hidden');
-  batchResults.classList.add('hidden');
-  failedSection.classList.add('hidden');
-  successCount.textContent = '0';
-  failedCount.textContent = '0';
-  failedUrls.innerHTML = '';
-
-  // Disable controls
-  startBatchBtn.disabled = true;
-  stopBatchBtn.disabled = false;
-  batchUrls.disabled = true;
-
-  // Start batch with skip option and profile username (for collab posts)
-  const skipDownloaded = skipDownloadedToggle?.checked ?? true;
-  const skipSources = getSkipSources();
-  port.postMessage({
-    action: 'startBatch',
-    data: {
-      urls,
-      skipDownloaded,
-      skipSources,
-      profileUsername: collectedProfileUsername // Pass profile username for collab handling
+    // Check for name mapping if we have a profile username
+    if (collectedProfileUsername) {
+      showStatus('info', `⏳ Checking name for @${collectedProfileUsername}...`);
+      const canProceed = await checkNameBeforeDownload(collectedProfileUsername, 'batch');
+      if (!canProceed) {
+        return; // Name prompt is shown, wait for user action
+      }
     }
-  });
 
-  showStatus('info', `🚀 Starting batch download of ${urls.length} posts...`);
+    // Confirm before starting
+    const confirmed = confirm(`Start batch download for ${urls.length} post${urls.length !== 1 ? 's' : ''}?\n\nThis will take approximately ${Math.ceil(urls.length * 10 / 60)} minutes.`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    // Reset UI
+    batchProgress.classList.remove('hidden');
+    batchResults.classList.add('hidden');
+    failedSection.classList.add('hidden');
+    successCount.textContent = '0';
+    failedCount.textContent = '0';
+    failedUrls.innerHTML = '';
+
+    // Disable controls
+    startBatchBtn.disabled = true;
+    stopBatchBtn.disabled = false;
+    batchUrls.disabled = true;
+
+    // Start batch with skip option and profile username (for collab posts)
+    const skipDownloaded = skipDownloadedToggle?.checked ?? true;
+    const skipSources = getSkipSources();
+    port.postMessage({
+      action: 'startBatch',
+      data: {
+        urls,
+        skipDownloaded,
+        skipSources,
+        profileUsername: collectedProfileUsername // Pass profile username for collab handling
+      }
+    });
+
+    showStatus('info', `🚀 Starting batch download of ${urls.length} posts...`);
   });
   console.log('[Popup] startBatchBtn click listener attached!');
 } else {

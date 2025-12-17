@@ -670,6 +670,17 @@ function buildFolderName(postInfo, profileUsername = null) {
   const postType = (postInfo.post_type || 'post').toUpperCase();
   const shortcode = postInfo.shortcode || 'post';
 
+  // Look up real name from Sheets sync cache
+  let realName = null;
+  if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+    realName = SheetsSync.lookupName(primaryUsername);
+  }
+
+  // Sanitize real name for filesystem (remove invalid characters)
+  const sanitizedRealName = realName
+    ? realName.replace(/[\/\\:*?"<>|]/g, '_').trim()
+    : null;
+
   // Format date as YYYYMMDD (no dashes)
   let dateStr = 'unknown-date';
   if (postInfo.posted_at) {
@@ -680,8 +691,13 @@ function buildFolderName(postInfo, profileUsername = null) {
     dateStr = `${year}${month}${day}`;
   }
 
-  // Build base name
-  let folderName = `${primaryUsername}_IG_${postType}_${dateStr}_${shortcode}`;
+  // Build base name with optional real name prefix
+  let folderName;
+  if (sanitizedRealName) {
+    folderName = `${sanitizedRealName} - ${primaryUsername}_IG_${postType}_${dateStr}_${shortcode}`;
+  } else {
+    folderName = `${primaryUsername}_IG_${postType}_${dateStr}_${shortcode}`;
+  }
 
   // DEBUG: Log what we received
   console.log('[Background] buildFolderName - postInfo.collaborators:', postInfo.collaborators);
@@ -1775,6 +1791,38 @@ chrome.runtime.onConnect.addListener((port) => {
           const record = SheetsSync.isDownloadedByOthers(shortcode);
           port.postMessage({ type: 'teamDownloadedCheck', data: { downloaded: !!record, record } });
 
+        // ===== NAME MAPPING HANDLERS =====
+
+        } else if (msg.action === 'lookupName') {
+          // Look up real name for a username
+          const { username } = msg.data;
+          const realName = SheetsSync.lookupName(username);
+          port.postMessage({ type: 'nameLookupResult', data: { username, realName } });
+
+        } else if (msg.action === 'addName') {
+          // Add a new name mapping
+          const { username, realName } = msg.data;
+          const result = await SheetsSync.addName(username, realName);
+          port.postMessage({ type: 'nameAdded', data: result });
+
+        } else if (msg.action === 'updateName') {
+          // Update an existing name mapping
+          const { username, realName } = msg.data;
+          const result = await SheetsSync.updateName(username, realName);
+          port.postMessage({ type: 'nameUpdated', data: result });
+
+        } else if (msg.action === 'getNames') {
+          // Get all name mappings
+          const names = SheetsSync.getAllNames();
+          port.postMessage({ type: 'namesResult', data: names });
+
+        } else if (msg.action === 'hasNameMapping') {
+          // Check if username has a name mapping
+          const { username } = msg.data;
+          const hasMapping = SheetsSync.hasNameMapping(username);
+          const realName = hasMapping ? SheetsSync.lookupName(username) : null;
+          port.postMessage({ type: 'hasNameMappingResult', data: { username, hasMapping, realName } });
+
         // ===== LOCAL FOLDER SCANNING HANDLERS =====
 
         } else if (msg.action === 'updateFolderScan') {
@@ -1891,10 +1939,27 @@ chrome.runtime.onConnect.addListener((port) => {
             // Capture using mobile emulation for iPhone-like layout
             const dataUrl = await captureMobileScreenshot(tab);
 
-            // Build filename
+            // Build filename with real name prefix if available
             const date = new Date();
             const dateStr = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`;
-            const filename = `Instagram/${username}/${username}_profile_screenshot_${dateStr}.png`;
+
+            // Look up real name from Sheets sync cache
+            let realName = null;
+            if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+              realName = SheetsSync.lookupName(username);
+            }
+            const sanitizedRealName = realName
+              ? realName.replace(/[\/\\:*?"<>|]/g, '_').trim()
+              : null;
+
+            // Build folder and filename with optional real name prefix
+            const folderName = sanitizedRealName
+              ? `${sanitizedRealName} - ${username}`
+              : username;
+            const filePrefix = sanitizedRealName
+              ? `${sanitizedRealName} - ${username}`
+              : username;
+            const filename = `Instagram/${folderName}/${filePrefix}_profile_screenshot_${dateStr}.png`;
 
             // Download the screenshot
             await downloadFile(dataUrl, filename, saveAs);
@@ -2431,6 +2496,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
       }
     });
+    return true; // Keep channel open for async response
+  }
+
+  // Check name mapping for username
+  if (message.action === 'checkNameMapping') {
+    const { username } = message.data || {};
+    const enabled = typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled;
+
+    if (!enabled || !username) {
+      sendResponse({ enabled: false });
+      return;
+    }
+
+    const hasMapping = SheetsSync.hasNameMapping(username);
+    const realName = hasMapping ? SheetsSync.lookupName(username) : null;
+
+    sendResponse({
+      enabled: true,
+      hasMapping,
+      realName,
+      username
+    });
+    return;
+  }
+
+  // Add name mapping
+  if (message.action === 'addNameMapping') {
+    const { username, realName } = message.data || {};
+
+    if (!username || !realName) {
+      sendResponse({ success: false, error: 'Missing username or realName' });
+      return;
+    }
+
+    SheetsSync.addName(username, realName)
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+
     return true; // Keep channel open for async response
   }
 });

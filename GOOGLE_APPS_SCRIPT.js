@@ -5,9 +5,10 @@
  * SETUP INSTRUCTIONS:
  *
  * 1. Create a new Google Sheet
- * 2. Add two sheets (tabs):
+ * 2. Add three sheets (tabs):
  *    - "Downloads" with headers: timestamp, shortcode, url, username, post_type, media_count, comment_count, caption, downloader, post_date
  *    - "Profiles" with headers: username, total_posts, downloaded_count, completion_pct, last_updated
+ *    - "Names" with headers: real_name, username (maps Instagram usernames to real names for file naming)
  * 3. Go to Extensions > Apps Script
  * 4. Delete any existing code and paste this entire file
  * 5. Update SPREADSHEET_ID below with your Google Sheet ID (from the URL)
@@ -24,9 +25,10 @@
 // ============================================================
 // CONFIGURATION - UPDATE THIS WITH YOUR SHEET ID
 // ============================================================
-const SPREADSHEET_ID = 'YOUR_SPREADSHEET_ID_HERE';  // <-- REPLACE THIS
+const SPREADSHEET_ID = '1OfKy8Zux_Imv1YC6vCDcwsSFMqUyXnDhwkM2QIoTv6Y';  // <-- REPLACE THIS
 const DOWNLOADS_SHEET = 'Downloads';
 const PROFILES_SHEET = 'Profiles';
+const NAMES_SHEET = 'Names';
 
 // ============================================================
 // GET HANDLER - Read data
@@ -49,6 +51,9 @@ function doGet(e) {
         const shortcodes = e.parameter.shortcodes ?
           e.parameter.shortcodes.split(',') : [];
         result = checkIfDownloaded(ss, shortcodes);
+        break;
+      case 'getNames':
+        result = getAllNames(ss);
         break;
       default:
         result = { error: 'Unknown action: ' + action };
@@ -90,6 +95,12 @@ function doPost(e) {
         break;
       case 'updateProfileTotal':
         result = updateProfileTotal(ss, data.username, data.totalPosts);
+        break;
+      case 'addName':
+        result = addNameMapping(ss, data.username, data.realName);
+        break;
+      case 'updateName':
+        result = updateNameMapping(ss, data.username, data.realName);
         break;
       default:
         result = { error: 'Unknown action: ' + action };
@@ -433,6 +444,123 @@ function recalculateProfileRow(ss, sheet, row, totalPosts) {
 }
 
 // ============================================================
+// NAME MAPPING FUNCTIONS
+// ============================================================
+
+/**
+ * Get or create the Names sheet
+ */
+function getOrCreateNamesSheet(ss) {
+  let sheet = ss.getSheetByName(NAMES_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(NAMES_SHEET);
+    sheet.appendRow(['real_name', 'username']);
+    // Format header row
+    sheet.getRange(1, 1, 1, 2).setFontWeight('bold');
+  }
+  return sheet;
+}
+
+/**
+ * Get all name mappings from the Names sheet
+ */
+function getAllNames(ss) {
+  const sheet = getOrCreateNamesSheet(ss);
+  const data = sheet.getDataRange().getValues();
+
+  if (data.length <= 1) {
+    return { names: [], count: 0 };
+  }
+
+  const headers = data[0];
+  const realNameCol = headers.indexOf('real_name');
+  const usernameCol = headers.indexOf('username');
+
+  const names = data.slice(1).map(row => ({
+    realName: row[realNameCol] || '',
+    username: (row[usernameCol] || '').toLowerCase().trim()
+  })).filter(n => n.username); // Filter out empty rows
+
+  return {
+    names,
+    count: names.length,
+    lastUpdated: new Date().toISOString()
+  };
+}
+
+/**
+ * Add a new name mapping
+ */
+function addNameMapping(ss, username, realName) {
+  if (!username || !realName) {
+    return { success: false, error: 'Username and real name are required' };
+  }
+
+  const sheet = getOrCreateNamesSheet(ss);
+  const normalizedUsername = username.toLowerCase().trim();
+
+  // Check for duplicate
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const usernameCol = headers.indexOf('username');
+
+  for (let i = 1; i < data.length; i++) {
+    if ((data[i][usernameCol] || '').toLowerCase().trim() === normalizedUsername) {
+      return { success: false, duplicate: true, error: 'Username already has a name mapping' };
+    }
+  }
+
+  // Append new row
+  sheet.appendRow([realName.trim(), normalizedUsername]);
+
+  return {
+    success: true,
+    added: true,
+    username: normalizedUsername,
+    realName: realName.trim()
+  };
+}
+
+/**
+ * Update an existing name mapping
+ */
+function updateNameMapping(ss, username, realName) {
+  if (!username || !realName) {
+    return { success: false, error: 'Username and real name are required' };
+  }
+
+  const sheet = getOrCreateNamesSheet(ss);
+  const normalizedUsername = username.toLowerCase().trim();
+
+  const data = sheet.getDataRange().getValues();
+  const headers = data[0];
+  const realNameCol = headers.indexOf('real_name');
+  const usernameCol = headers.indexOf('username');
+
+  for (let i = 1; i < data.length; i++) {
+    if ((data[i][usernameCol] || '').toLowerCase().trim() === normalizedUsername) {
+      // Update existing row
+      sheet.getRange(i + 1, realNameCol + 1).setValue(realName.trim());
+      return {
+        success: true,
+        updated: true,
+        username: normalizedUsername,
+        realName: realName.trim()
+      };
+    }
+  }
+
+  // Not found, add new
+  sheet.appendRow([realName.trim(), normalizedUsername]);
+  return {
+    success: true,
+    added: true,
+    username: normalizedUsername,
+    realName: realName.trim()
+  };
+}
+
+// ============================================================
 // TEST FUNCTIONS (for debugging in Apps Script editor)
 // ============================================================
 
@@ -469,5 +597,23 @@ function testAddDownload() {
     downloader: 'TestUser',
     post_date: new Date().toISOString()
   });
+  Logger.log(JSON.stringify(result, null, 2));
+}
+
+/**
+ * Test getting all name mappings
+ */
+function testGetNames() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const result = getAllNames(ss);
+  Logger.log(JSON.stringify(result, null, 2));
+}
+
+/**
+ * Test adding a name mapping
+ */
+function testAddName() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const result = addNameMapping(ss, 'testuser', 'Test User Name');
   Logger.log(JSON.stringify(result, null, 2));
 }

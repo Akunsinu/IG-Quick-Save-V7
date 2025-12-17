@@ -16,6 +16,7 @@ const SheetsSync = {
   cache: {
     downloads: new Map(),   // shortcode -> download record
     profiles: new Map(),    // username -> profile stats
+    names: new Map(),       // username (lowercase) -> real name
     lastFetched: null,      // Timestamp of last cache refresh
   },
 
@@ -138,6 +139,18 @@ const SheetsSync = {
         this.cache.profiles.set(profile.username, profile);
       });
 
+      // Fetch name mappings
+      const namesResponse = await this._fetch(`${this.config.webAppUrl}?action=getNames`);
+      const namesData = await namesResponse.json();
+
+      this.cache.names.clear();
+      const names = namesData.names || [];
+      names.forEach(nameRecord => {
+        if (nameRecord.username) {
+          this.cache.names.set(nameRecord.username.toLowerCase(), nameRecord.realName);
+        }
+      });
+
       // Update timestamps
       this.cache.lastFetched = Date.now();
       this.config.lastSync = new Date().toISOString();
@@ -148,13 +161,15 @@ const SheetsSync = {
 
       console.log('[SheetsSync] Cache refreshed:', {
         downloads: this.cache.downloads.size,
-        profiles: this.cache.profiles.size
+        profiles: this.cache.profiles.size,
+        names: this.cache.names.size
       });
 
       return {
         success: true,
         downloadCount: this.cache.downloads.size,
-        profileCount: this.cache.profiles.size
+        profileCount: this.cache.profiles.size,
+        nameCount: this.cache.names.size
       };
 
     } catch (error) {
@@ -213,6 +228,122 @@ const SheetsSync = {
       }
     });
     return downloads;
+  },
+
+  // ===== NAME MAPPING METHODS =====
+
+  /**
+   * Look up a real name for a username (from cache)
+   * @param {string} username - Instagram username
+   * @returns {string|null} - Real name or null if not found
+   */
+  lookupName(username) {
+    if (!this.config.enabled || !username) return null;
+    return this.cache.names.get(username.toLowerCase().trim()) || null;
+  },
+
+  /**
+   * Check if a username has a name mapping
+   * @param {string} username - Instagram username
+   * @returns {boolean}
+   */
+  hasNameMapping(username) {
+    if (!this.config.enabled || !username) return false;
+    return this.cache.names.has(username.toLowerCase().trim());
+  },
+
+  /**
+   * Add a new name mapping
+   * @param {string} username - Instagram username
+   * @param {string} realName - Real name to map to
+   */
+  async addName(username, realName) {
+    if (!this.config.enabled || !this.config.webAppUrl) {
+      return { success: false, error: 'Sync not configured' };
+    }
+
+    if (!username || !realName) {
+      return { success: false, error: 'Username and real name are required' };
+    }
+
+    try {
+      const response = await this._fetch(this.config.webAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'addName',
+          username: username.toLowerCase().trim(),
+          realName: realName.trim()
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        // Update local cache immediately
+        this.cache.names.set(username.toLowerCase().trim(), realName.trim());
+        console.log('[SheetsSync] Name added:', username, '->', realName);
+      }
+
+      return result;
+
+    } catch (error) {
+      console.error('[SheetsSync] Add name error:', error);
+      return { success: false, error: error.message };
+    }
+  },
+
+  /**
+   * Update an existing name mapping
+   * @param {string} username - Instagram username
+   * @param {string} realName - New real name
+   */
+  async updateName(username, realName) {
+    if (!this.config.enabled || !this.config.webAppUrl) {
+      return { success: false, error: 'Sync not configured' };
+    }
+
+    if (!username || !realName) {
+      return { success: false, error: 'Username and real name are required' };
+    }
+
+    try {
+      const response = await this._fetch(this.config.webAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'updateName',
+          username: username.toLowerCase().trim(),
+          realName: realName.trim()
+        })
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        // Update local cache
+        this.cache.names.set(username.toLowerCase().trim(), realName.trim());
+        console.log('[SheetsSync] Name updated:', username, '->', realName);
+      }
+
+      return result;
+
+    } catch (error) {
+      console.error('[SheetsSync] Update name error:', error);
+      return { success: false, error: error.message };
+    }
+  },
+
+  /**
+   * Get all name mappings
+   * @returns {array} - Array of {username, realName} objects
+   */
+  getAllNames() {
+    const names = [];
+    this.cache.names.forEach((realName, username) => {
+      names.push({ username, realName });
+    });
+    return names;
   },
 
   // ===== TRACKING METHODS =====
@@ -375,7 +506,8 @@ const SheetsSync = {
       skipTeamDownloaded: this.config.skipTeamDownloaded,
       cacheSize: {
         downloads: this.cache.downloads.size,
-        profiles: this.cache.profiles.size
+        profiles: this.cache.profiles.size,
+        names: this.cache.names.size
       }
     };
   },

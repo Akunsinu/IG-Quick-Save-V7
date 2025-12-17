@@ -183,6 +183,87 @@
       display: none;
     }
 
+    /* Name Prompt Modal */
+    .name-prompt-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .name-prompt-overlay.hidden {
+      display: none;
+    }
+
+    .name-prompt-modal {
+      background: white;
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 320px;
+      width: 90%;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+
+    .name-prompt-modal h3 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+      color: #262626;
+    }
+
+    .name-prompt-modal p {
+      margin: 0 0 16px 0;
+      font-size: 13px;
+      color: #8e8e8e;
+    }
+
+    .name-prompt-modal .username-highlight {
+      color: #0095f6;
+      font-weight: 600;
+    }
+
+    .name-prompt-modal input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #dbdbdb;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+
+    .name-prompt-modal input:focus {
+      outline: none;
+      border-color: #0095f6;
+    }
+
+    .name-prompt-buttons {
+      display: flex;
+      gap: 8px;
+    }
+
+    .name-prompt-buttons button {
+      flex: 1;
+      padding: 10px;
+      font-size: 13px;
+    }
+
+    .name-prompt-buttons .primary {
+      background: #0095f6;
+      color: white;
+    }
+
+    .name-prompt-buttons .secondary {
+      background: #fafafa;
+      color: #262626;
+      border: 1px solid #dbdbdb;
+    }
+
     /* Password screen styles */
     #passwordScreen {
       display: flex;
@@ -264,7 +345,7 @@
     <div style="text-align: center; margin-bottom: 24px;">
       <div style="font-size: 48px; margin-bottom: 12px;">🔒</div>
       <h2>Protected Extension</h2>
-      <p>Enter password to access IG Quick Save V8.0.0</p>
+      <p>Enter password to access IG Quick Save V8.0.1</p>
     </div>
 
     <div class="password-input-group">
@@ -280,7 +361,7 @@
   <!-- Main Content (hidden until unlocked) -->
   <div id="mainContent">
     <div class="header">
-      <h1>📸 IG Quick Save V8.0.0 <span class="sidepanel-badge">Side Panel</span></h1>
+      <h1>📸 IG Quick Save V8.0.1 <span class="sidepanel-badge">Side Panel</span></h1>
       <p>Download media & comments from posts and profiles</p>
     </div>
 
@@ -303,6 +384,19 @@
     <button id="extractBtn" class="primary">
       Extract Post Data
     </button>
+
+    <!-- Name Prompt Modal -->
+    <div id="namePromptOverlay" class="name-prompt-overlay hidden">
+      <div class="name-prompt-modal">
+        <h3>Add Real Name</h3>
+        <p>No name found for <span id="promptUsername" class="username-highlight">@username</span></p>
+        <input type="text" id="realNameInput" placeholder="Enter real name (e.g., Amanda Gonzalez)">
+        <div class="name-prompt-buttons">
+          <button id="skipNameBtn" class="secondary">Skip</button>
+          <button id="saveNameBtn" class="primary">Save & Continue</button>
+        </div>
+      </div>
+    </div>
 
     <div id="downloadOptions" class="download-options hidden">
       <h3>Download Options</h3>
@@ -724,7 +818,7 @@
     <!-- Version Info -->
     <div style="text-align: center; margin-top: 12px; padding-bottom: 20px;">
       <div style="font-size: 10px; color: #8e8e8e;">
-        IG Quick Save V8.0.0
+        IG Quick Save V8.0.1
       </div>
       <div style="font-size: 9px; color: #c7c7c7; margin-top: 2px;">
         Side Panel Mode - Stays open while browsing

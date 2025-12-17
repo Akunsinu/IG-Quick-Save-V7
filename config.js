@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.0',
-  VERSION_NAME: 'V8.0.0 - Persistent Side Panel UI',
+  VERSION: '8.0.1',
+  VERSION_NAME: 'V8.0.1 - Username to Real Name Mapping',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================
