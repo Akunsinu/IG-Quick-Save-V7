@@ -91,6 +91,26 @@ async function getParentFolder(username) {
   return username;
 }
 
+// Extract real name from source path (e.g., "Instagram/Aakash - username/..." -> "Aakash")
+function extractRealNameFromPath(sourcePath, username) {
+  if (!sourcePath) return null;
+
+  // Split path and find the parent folder (second segment after "Instagram/")
+  const parts = sourcePath.split('/');
+  // Path format: Instagram/{parentFolder}/{postFolder}/...
+  // parentFolder might be "RealName - username" or just "username"
+
+  for (const part of parts) {
+    // Check if this part contains " - username"
+    const suffix = ` - ${username}`;
+    if (part.endsWith(suffix)) {
+      // Extract the real name part
+      return part.slice(0, -suffix.length);
+    }
+  }
+  return null;
+}
+
 // DOM Elements
 const welcomeScreen = document.getElementById('welcomeScreen');
 const postsContainer = document.getElementById('postsContainer');
@@ -572,9 +592,11 @@ async function scanFolder(dirHandle, path = '', depth = 0) {
 
           if (metadata) {
             console.log('  Found metadata in:', entry.name);
-            const post = await loadPost(entry, metadata);
+            // Pass the full source path: parent folder path + post folder name
+            const sourcePath = path + entry.name;
+            const post = await loadPost(entry, metadata, sourcePath);
             if (post) {
-              console.log('  Loaded post:', post.username, post.shortcode);
+              console.log('  Loaded post:', post.username, post.shortcode, '| sourcePath:', sourcePath);
               foundPosts.push(post);
             }
           } else {
@@ -620,13 +642,14 @@ async function findMetadata(dirHandle) {
 }
 
 // Load a post from a folder
-async function loadPost(dirHandle, metadata) {
+async function loadPost(dirHandle, metadata, sourcePath = '') {
   const post = {
     ...metadata,
     media: [],
     comments: [],
     avatars: {}, // Map of username -> base64 avatar
-    folderHandle: dirHandle
+    folderHandle: dirHandle,
+    sourcePath: sourcePath // Track where this post was loaded from (e.g., "Instagram/Aakash - username/username_IG_POST_...")
   };
 
   // Load media files
@@ -1740,18 +1763,16 @@ async function exportAllComments() {
     let successCount = 0;
     let failCount = 0;
 
-    // Build folder path: Instagram/{parentFolder}/{folderName}/comments/screenshots/
+    // Use the source path where the post was loaded from
+    // This preserves the original folder structure including real name prefix
     const username = post.username || 'unknown';
-    const realName = await getRealNameForUser(username);
-    // Build parentFolder directly from realName
-    let parentFolder = username;
-    if (realName) {
-      const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
-      parentFolder = `${sanitizedRealName} - ${username}`;
-    }
-    const folderName = buildFilePrefix(post);
-    const basePath = `Instagram/${parentFolder}/${folderName}/comments/screenshots`;
-    console.log('[Viewer] Export path:', basePath, '| realName:', realName);
+    const basePath = post.sourcePath
+      ? `${post.sourcePath}/comments/screenshots`
+      : `Instagram/${username}/${buildFilePrefix(post)}/comments/screenshots`;
+
+    // Extract real name from source path for filename prefix
+    const realName = extractRealNameFromPath(post.sourcePath, username);
+    console.log('[Viewer] Export path:', basePath, '| realName from path:', realName);
 
     // Initialize avatar cache from post.avatars (already base64)
     const avatarCache = { ...(post.avatars || {}) };
@@ -2130,9 +2151,9 @@ async function exportCommentScreenshot(commentEl) {
     // Get flat index for filename
     const commentIndex = getFlatCommentIndex(post.comments, commentId);
 
-    // Get real name for filename prefix
+    // Extract real name from source path for filename prefix
     const postUsername = post.username || 'unknown';
-    const realName = await getRealNameForUser(postUsername);
+    const realName = extractRealNameFromPath(post.sourcePath, postUsername);
 
     // Build avatar cache - start with post.avatars, then prefetch if needed
     const avatarCache = { ...(post.avatars || {}) };
@@ -2338,16 +2359,6 @@ async function bulkExportCommentsForAccount(targetUsername) {
     let exportedCount = 0;
     let failCount = 0;
 
-    // Get real name for parent folder and filename prefix
-    const realName = await getRealNameForUser(targetUsername);
-    // Build parentFolder directly from realName
-    let parentFolder = targetUsername;
-    if (realName) {
-      const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
-      parentFolder = `${sanitizedRealName} - ${targetUsername}`;
-    }
-    console.log('[Viewer] Bulk export path prefix:', parentFolder, '| realName:', realName);
-
     // Process each post
     for (let postIdx = 0; postIdx < accountPosts.length; postIdx++) {
       const post = accountPosts[postIdx];
@@ -2364,9 +2375,14 @@ async function bulkExportCommentsForAccount(targetUsername) {
       }
       collectComments(post.comments);
 
-      // Build folder path for this post
-      const folderName = buildFilePrefix(post);
-      const basePath = `Instagram/${parentFolder}/${folderName}/comments/screenshots`;
+      // Use the source path where the post was loaded from
+      const basePath = post.sourcePath
+        ? `${post.sourcePath}/comments/screenshots`
+        : `Instagram/${targetUsername}/${buildFilePrefix(post)}/comments/screenshots`;
+
+      // Extract real name from source path for filename prefix
+      const realName = extractRealNameFromPath(post.sourcePath, targetUsername);
+      console.log('[Viewer] Bulk export path:', basePath, '| realName:', realName);
 
       // Initialize avatar cache from post.avatars
       const avatarCache = { ...(post.avatars || {}) };
@@ -2544,15 +2560,6 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
       p.comments.length > 0
     );
 
-    // Get real name for parent folder and filename prefix
-    const realName = await getRealNameForUser(targetUsername);
-    // Build parentFolder directly from realName
-    let parentFolder = targetUsername;
-    if (realName) {
-      const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
-      parentFolder = `${sanitizedRealName} - ${targetUsername}`;
-    }
-
     for (const post of accountPosts) {
       const allComments = [];
       function collectComments(comments, depth = 0) {
@@ -2565,8 +2572,14 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
       }
       collectComments(post.comments);
 
-      const folderName = buildFilePrefix(post);
-      const basePath = `Instagram/${parentFolder}/${folderName}/comments/screenshots`;
+      // Use the source path where the post was loaded from
+      const basePath = post.sourcePath
+        ? `${post.sourcePath}/comments/screenshots`
+        : `Instagram/${targetUsername}/${buildFilePrefix(post)}/comments/screenshots`;
+
+      // Extract real name from source path for filename prefix
+      const realName = extractRealNameFromPath(post.sourcePath, targetUsername);
+
       const avatarCache = { ...(post.avatars || {}) };
 
       // Pre-fetch avatars
