@@ -43,21 +43,33 @@ themeToggle?.addEventListener('click', toggleTheme);
 // Real name lookup helpers for export paths
 async function getRealNameForUser(username) {
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({
-      action: 'checkNameMapping',
-      data: { username }
-    }, (response) => {
-      if (response?.enabled && response?.hasMapping && response?.realName) {
-        resolve(response.realName);
-      } else {
-        resolve(null);
-      }
-    });
+    try {
+      chrome.runtime.sendMessage({
+        action: 'checkNameMapping',
+        data: { username }
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.warn('[Viewer] checkNameMapping error:', chrome.runtime.lastError.message);
+          resolve(null);
+          return;
+        }
+        console.log('[Viewer] checkNameMapping response for', username, ':', response);
+        if (response?.enabled && response?.hasMapping && response?.realName) {
+          resolve(response.realName);
+        } else {
+          resolve(null);
+        }
+      });
+    } catch (error) {
+      console.error('[Viewer] getRealNameForUser error:', error);
+      resolve(null);
+    }
   });
 }
 
 async function getParentFolder(username) {
   const realName = await getRealNameForUser(username);
+  console.log('[Viewer] getParentFolder for', username, '- realName:', realName);
   if (realName) {
     const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
     return `${sanitizedRealName} - ${username}`;
@@ -1717,9 +1729,15 @@ async function exportAllComments() {
     // Build folder path: Instagram/{parentFolder}/{folderName}/comments/screenshots/
     const username = post.username || 'unknown';
     const realName = await getRealNameForUser(username);
-    const parentFolder = await getParentFolder(username);
+    // Build parentFolder directly from realName
+    let parentFolder = username;
+    if (realName) {
+      const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
+      parentFolder = `${sanitizedRealName} - ${username}`;
+    }
     const folderName = buildFilePrefix(post);
     const basePath = `Instagram/${parentFolder}/${folderName}/comments/screenshots`;
+    console.log('[Viewer] Export path:', basePath, '| realName:', realName);
 
     // Initialize avatar cache from post.avatars (already base64)
     const avatarCache = { ...(post.avatars || {}) };
@@ -2308,7 +2326,13 @@ async function bulkExportCommentsForAccount(targetUsername) {
 
     // Get real name for parent folder and filename prefix
     const realName = await getRealNameForUser(targetUsername);
-    const parentFolder = await getParentFolder(targetUsername);
+    // Build parentFolder directly from realName
+    let parentFolder = targetUsername;
+    if (realName) {
+      const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
+      parentFolder = `${sanitizedRealName} - ${targetUsername}`;
+    }
+    console.log('[Viewer] Bulk export path prefix:', parentFolder, '| realName:', realName);
 
     // Process each post
     for (let postIdx = 0; postIdx < accountPosts.length; postIdx++) {
@@ -2508,7 +2532,12 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
 
     // Get real name for parent folder and filename prefix
     const realName = await getRealNameForUser(targetUsername);
-    const parentFolder = await getParentFolder(targetUsername);
+    // Build parentFolder directly from realName
+    let parentFolder = targetUsername;
+    if (realName) {
+      const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
+      parentFolder = `${sanitizedRealName} - ${targetUsername}`;
+    }
 
     for (const post of accountPosts) {
       const allComments = [];
