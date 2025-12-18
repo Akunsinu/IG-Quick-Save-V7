@@ -2539,15 +2539,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Check name mapping for username
   if (message.action === 'checkNameMapping') {
     const { username } = message.data || {};
+    console.log('[Background] checkNameMapping request for:', username);
+
     const enabled = typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled;
+    console.log('[Background] SheetsSync enabled:', enabled);
 
     if (!enabled || !username) {
+      console.log('[Background] Returning disabled response');
       sendResponse({ enabled: false });
-      return;
+      return true;
     }
 
     const hasMapping = SheetsSync.hasNameMapping(username);
     const realName = hasMapping ? SheetsSync.lookupName(username) : null;
+
+    console.log('[Background] Name lookup result - hasMapping:', hasMapping, 'realName:', realName);
 
     sendResponse({
       enabled: true,
@@ -2555,7 +2561,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       realName,
       username
     });
-    return;
+    return true; // Keep message channel open
   }
 
   // Add name mapping

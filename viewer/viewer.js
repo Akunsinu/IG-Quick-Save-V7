@@ -42,21 +42,35 @@ themeToggle?.addEventListener('click', toggleTheme);
 
 // Real name lookup helpers for export paths
 async function getRealNameForUser(username) {
+  console.log('[Viewer] getRealNameForUser called for:', username);
+  console.log('[Viewer] chrome.runtime available:', typeof chrome !== 'undefined' && typeof chrome.runtime !== 'undefined');
+  console.log('[Viewer] Extension ID:', chrome.runtime?.id);
+
   return new Promise((resolve) => {
     try {
+      if (!chrome?.runtime?.sendMessage) {
+        console.error('[Viewer] chrome.runtime.sendMessage not available!');
+        resolve(null);
+        return;
+      }
+
+      console.log('[Viewer] Sending checkNameMapping message...');
       chrome.runtime.sendMessage({
         action: 'checkNameMapping',
         data: { username }
       }, (response) => {
+        console.log('[Viewer] Got response, lastError:', chrome.runtime.lastError);
         if (chrome.runtime.lastError) {
           console.warn('[Viewer] checkNameMapping error:', chrome.runtime.lastError.message);
           resolve(null);
           return;
         }
-        console.log('[Viewer] checkNameMapping response for', username, ':', response);
+        console.log('[Viewer] checkNameMapping response for', username, ':', JSON.stringify(response));
         if (response?.enabled && response?.hasMapping && response?.realName) {
+          console.log('[Viewer] Found real name:', response.realName);
           resolve(response.realName);
         } else {
+          console.log('[Viewer] No real name found. enabled:', response?.enabled, 'hasMapping:', response?.hasMapping);
           resolve(null);
         }
       });
