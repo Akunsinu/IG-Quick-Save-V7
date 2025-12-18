@@ -40,6 +40,31 @@ initTheme();
 // Theme toggle event listener
 themeToggle?.addEventListener('click', toggleTheme);
 
+// Real name lookup helpers for export paths
+async function getRealNameForUser(username) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({
+      action: 'checkNameMapping',
+      data: { username }
+    }, (response) => {
+      if (response?.enabled && response?.hasMapping && response?.realName) {
+        resolve(response.realName);
+      } else {
+        resolve(null);
+      }
+    });
+  });
+}
+
+async function getParentFolder(username) {
+  const realName = await getRealNameForUser(username);
+  if (realName) {
+    const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
+    return `${sanitizedRealName} - ${username}`;
+  }
+  return username;
+}
+
 // DOM Elements
 const welcomeScreen = document.getElementById('welcomeScreen');
 const postsContainer = document.getElementById('postsContainer');
@@ -1310,9 +1335,16 @@ function escapeHtml(text) {
 // Build filename matching extension naming convention: username_IG_POSTTYPE_YYYYMMDD_shortcode[_collab_user1_user2]
 // Build unified comment screenshot filename
 // Format: username_IG_POST_{POSTDATE}_{SHORTCODE}_COMMENT_{COMMENT_NUMBER}_{COMMENT_DATE}_{COMMENT_AUTHOR}
-function buildCommentFilename(post, comment, commentIndex) {
+function buildCommentFilename(post, comment, commentIndex, realName = null) {
   const username = post.username || 'unknown';
   const shortcode = post.shortcode || 'post';
+
+  // Build prefix with real name if available
+  let prefix = username;
+  if (realName) {
+    const sanitizedRealName = realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
+    prefix = `${sanitizedRealName} - ${username}`;
+  }
 
   // Post date
   let postDateStr = 'unknown';
@@ -1339,7 +1371,7 @@ function buildCommentFilename(post, comment, commentIndex) {
     }
   }
 
-  // Comment author
+  // Comment author (stays as username only)
   const commentAuthor = comment.owner?.username ||
                         comment.user?.username ||
                         comment.username ||
@@ -1348,7 +1380,7 @@ function buildCommentFilename(post, comment, commentIndex) {
   // Comment number (1-indexed)
   const commentNum = String(commentIndex + 1).padStart(3, '0');
 
-  return `${username}_IG_POST_${postDateStr}_${shortcode}_COMMENT_${commentNum}_${commentDateStr}_${commentAuthor}`;
+  return `${prefix}_IG_POST_${postDateStr}_${shortcode}_COMMENT_${commentNum}_${commentDateStr}_${commentAuthor}`;
 }
 
 function buildFilePrefix(post) {
@@ -1682,10 +1714,12 @@ async function exportAllComments() {
     let successCount = 0;
     let failCount = 0;
 
-    // Build folder path: Instagram/{username}/{folderName}/comments/screenshots/
+    // Build folder path: Instagram/{parentFolder}/{folderName}/comments/screenshots/
     const username = post.username || 'unknown';
+    const realName = await getRealNameForUser(username);
+    const parentFolder = await getParentFolder(username);
     const folderName = buildFilePrefix(post);
-    const basePath = `Instagram/${username}/${folderName}/comments/screenshots`;
+    const basePath = `Instagram/${parentFolder}/${folderName}/comments/screenshots`;
 
     // Initialize avatar cache from post.avatars (already base64)
     const avatarCache = { ...(post.avatars || {}) };
@@ -1795,8 +1829,8 @@ async function exportAllComments() {
           allowTaint: true
         });
 
-        // Build filename using unified format
-        const commentFilename = buildCommentFilename(post, comment, i);
+        // Build filename using unified format (with real name prefix)
+        const commentFilename = buildCommentFilename(post, comment, i, realName);
         const filename = `${basePath}/${commentFilename}.png`;
         const dataUrl = canvas.toDataURL('image/png');
 
@@ -2064,6 +2098,10 @@ async function exportCommentScreenshot(commentEl) {
     // Get flat index for filename
     const commentIndex = getFlatCommentIndex(post.comments, commentId);
 
+    // Get real name for filename prefix
+    const postUsername = post.username || 'unknown';
+    const realName = await getRealNameForUser(postUsername);
+
     // Build avatar cache - start with post.avatars, then prefetch if needed
     const avatarCache = { ...(post.avatars || {}) };
 
@@ -2114,8 +2152,8 @@ async function exportCommentScreenshot(commentEl) {
       allowTaint: true
     });
 
-    // Build filename using unified format
-    const filename = buildCommentFilename(post, comment, commentIndex) + '.png';
+    // Build filename using unified format (with real name prefix)
+    const filename = buildCommentFilename(post, comment, commentIndex, realName) + '.png';
 
     // Download
     const link = document.createElement('a');
@@ -2268,6 +2306,10 @@ async function bulkExportCommentsForAccount(targetUsername) {
     let exportedCount = 0;
     let failCount = 0;
 
+    // Get real name for parent folder and filename prefix
+    const realName = await getRealNameForUser(targetUsername);
+    const parentFolder = await getParentFolder(targetUsername);
+
     // Process each post
     for (let postIdx = 0; postIdx < accountPosts.length; postIdx++) {
       const post = accountPosts[postIdx];
@@ -2286,7 +2328,7 @@ async function bulkExportCommentsForAccount(targetUsername) {
 
       // Build folder path for this post
       const folderName = buildFilePrefix(post);
-      const basePath = `Instagram/${targetUsername}/${folderName}/comments/screenshots`;
+      const basePath = `Instagram/${parentFolder}/${folderName}/comments/screenshots`;
 
       // Initialize avatar cache from post.avatars
       const avatarCache = { ...(post.avatars || {}) };
@@ -2367,8 +2409,8 @@ async function bulkExportCommentsForAccount(targetUsername) {
             allowTaint: true
           });
 
-          // Build filename using unified format
-          const commentFilename = buildCommentFilename(post, comment, i);
+          // Build filename using unified format (with real name prefix)
+          const commentFilename = buildCommentFilename(post, comment, i, realName);
           const filename = `${basePath}/${commentFilename}.jpg`;
 
           // Download via extension
@@ -2464,6 +2506,10 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
       p.comments.length > 0
     );
 
+    // Get real name for parent folder and filename prefix
+    const realName = await getRealNameForUser(targetUsername);
+    const parentFolder = await getParentFolder(targetUsername);
+
     for (const post of accountPosts) {
       const allComments = [];
       function collectComments(comments, depth = 0) {
@@ -2477,7 +2523,7 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
       collectComments(post.comments);
 
       const folderName = buildFilePrefix(post);
-      const basePath = `Instagram/${targetUsername}/${folderName}/comments/screenshots`;
+      const basePath = `Instagram/${parentFolder}/${folderName}/comments/screenshots`;
       const avatarCache = { ...(post.avatars || {}) };
 
       // Pre-fetch avatars
@@ -2532,8 +2578,8 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
             allowTaint: true
           });
 
-          // Build filename using unified format
-          const commentFilename = buildCommentFilename(post, comment, i);
+          // Build filename using unified format (with real name prefix)
+          const commentFilename = buildCommentFilename(post, comment, i, realName);
           const filename = `${basePath}/${commentFilename}.jpg`;
           const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
 

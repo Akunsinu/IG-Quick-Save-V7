@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.2',
-  VERSION_NAME: 'V8.0.2 - Real Name Column in Downloads Sheet',
+  VERSION: '8.0.3',
+  VERSION_NAME: 'V8.0.3 - Viewer Comment Export Real Name Support',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================
