@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.1',
-  VERSION_NAME: 'V8.0.1 - Username to Real Name Mapping',
+  VERSION: '8.0.2',
+  VERSION_NAME: 'V8.0.2 - Real Name Column in Downloads Sheet',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================

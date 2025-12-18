@@ -1297,7 +1297,20 @@ chrome.runtime.onConnect.addListener((port) => {
           // Build custom folder name with username parent folder
           const username = postInfo.username || 'unknown';
           const folderName = buildFolderName(postInfo);
-          const folderPrefix = `Instagram/${username}/${folderName}/media`;
+
+          // Look up real name for parent folder
+          let realName = null;
+          if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+            realName = SheetsSync.lookupName(username);
+          }
+          const sanitizedRealName = realName
+            ? realName.replace(/[\/\\:*?"<>|]/g, '_').trim()
+            : null;
+          const parentFolder = sanitizedRealName
+            ? `${sanitizedRealName} - ${username}`
+            : username;
+
+          const folderPrefix = `Instagram/${parentFolder}/${folderName}/media`;
 
           // Build base filename prefix
           const filePrefix = buildFilePrefix(postInfo);
@@ -1426,6 +1439,18 @@ chrome.runtime.onConnect.addListener((port) => {
           const folderName = buildFolderName(postInfo);
           const filePrefix = buildFilePrefix(postInfo);
 
+          // Look up real name for parent folder
+          let realName = null;
+          if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+            realName = SheetsSync.lookupName(username);
+          }
+          const sanitizedRealName = realName
+            ? realName.replace(/[\/\\:*?"<>|]/g, '_').trim()
+            : null;
+          const parentFolder = sanitizedRealName
+            ? `${sanitizedRealName} - ${username}`
+            : username;
+
           // Send initial progress
           broadcastToUI({
             type: 'progress',
@@ -1434,7 +1459,7 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Download media
           if (currentData.media && currentData.media.media) {
-            const folderPrefix = `Instagram/${username}/${folderName}/media`;
+            const folderPrefix = `Instagram/${parentFolder}/${folderName}/media`;
             const mediaCount = currentData.media.media.length;
 
             broadcastToUI({
@@ -1465,12 +1490,12 @@ chrome.runtime.onConnect.addListener((port) => {
               message: '💾 Saving comments as JSON and CSV...'
             });
 
-            const jsonFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.json`;
+            const jsonFilename = `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.json`;
             await downloadJSON(currentData.comments, jsonFilename, false);
 
             // Pass full currentData.comments object (includes post_info and comments)
             const csv = commentsToCSV(currentData.comments);
-            const csvFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.csv`;
+            const csvFilename = `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.csv`;
             await downloadCSV(csv, csvFilename, false);
           }
 
@@ -1486,7 +1511,7 @@ chrome.runtime.onConnect.addListener((port) => {
             media_count: currentData.media?.media?.length || 0,
             comment_count: currentData.comments?.total || 0
           };
-          const metadataFilename = `Instagram/${username}/${folderName}/${filePrefix}_metadata.json`;
+          const metadataFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_metadata.json`;
           await downloadJSON(metadata, metadataFilename, false);
 
           // Download HTML archive
@@ -1496,7 +1521,7 @@ chrome.runtime.onConnect.addListener((port) => {
           });
 
           const htmlContent = await generatePostHTML(currentData, filePrefix);
-          const htmlFilename = `Instagram/${username}/${folderName}/${filePrefix}_archive.html`;
+          const htmlFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_archive.html`;
           await downloadHTML(htmlContent, htmlFilename, false);
 
           // Capture Instagram-style screenshot
@@ -1526,7 +1551,7 @@ chrome.runtime.onConnect.addListener((port) => {
                 // Render the screenshot
                 const screenshotDataUrl = await renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl);
 
-                const screenshotFilename = `Instagram/${username}/${folderName}/${filePrefix}_screenshot.png`;
+                const screenshotFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_screenshot.png`;
                 await downloadFile(screenshotDataUrl, screenshotFilename, false);
               } else {
                 console.warn('[Background] Could not fetch media for screenshot');
@@ -2194,9 +2219,21 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         const folderName = buildFolderName(postInfo, batchState.profileUsername);
         const filePrefix = buildFilePrefix(postInfo, batchState.profileUsername);
 
+        // Look up real name for parent folder
+        let realName = null;
+        if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+          realName = SheetsSync.lookupName(username);
+        }
+        const sanitizedRealName = realName
+          ? realName.replace(/[\/\\:*?"<>|]/g, '_').trim()
+          : null;
+        const parentFolder = sanitizedRealName
+          ? `${sanitizedRealName} - ${username}`
+          : username;
+
         // Download media
         if (currentData.media && currentData.media.media) {
-          const folderPrefix = `Instagram/${username}/${folderName}/media`;
+          const folderPrefix = `Instagram/${parentFolder}/${folderName}/media`;
           for (let i = 0; i < currentData.media.media.length; i++) {
             const item = currentData.media.media[i];
             const url = item.video_url || item.image_url;
@@ -2208,12 +2245,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
         // Download comments as JSON and CSV
         if (currentData.comments && currentData.comments.comments) {
-          const jsonFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.json`;
+          const jsonFilename = `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.json`;
           await downloadJSON(currentData.comments, jsonFilename, false);
 
           // Pass full currentData.comments object (includes post_info and comments)
           const csv = commentsToCSV(currentData.comments);
-          const csvFilename = `Instagram/${username}/${folderName}/comments/${filePrefix}_comments.csv`;
+          const csvFilename = `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.csv`;
           await downloadCSV(csv, csvFilename, false);
         }
 
@@ -2224,13 +2261,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           media_count: currentData.media?.media?.length || 0,
           comment_count: currentData.comments?.total || 0
         };
-        const metadataFilename = `Instagram/${username}/${folderName}/${filePrefix}_metadata.json`;
+        const metadataFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_metadata.json`;
         await downloadJSON(metadata, metadataFilename, false);
 
         // Download HTML archive (wait a bit to ensure content script is ready for avatar fetching)
         await new Promise(resolve => setTimeout(resolve, 1000));
         const htmlContent = await generatePostHTML(currentData, filePrefix);
-        const htmlFilename = `Instagram/${username}/${folderName}/${filePrefix}_archive.html`;
+        const htmlFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_archive.html`;
         await downloadHTML(htmlContent, htmlFilename, false);
 
         // Capture Instagram-style screenshot
@@ -2256,7 +2293,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
               // Render the screenshot
               const screenshotDataUrl = await renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl);
 
-              const screenshotFilename = `Instagram/${username}/${folderName}/${filePrefix}_screenshot.png`;
+              const screenshotFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_screenshot.png`;
               await downloadFile(screenshotDataUrl, screenshotFilename, false);
             } else {
               console.warn('[Background] Could not fetch media for batch screenshot');

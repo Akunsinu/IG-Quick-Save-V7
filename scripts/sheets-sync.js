@@ -357,10 +357,14 @@ const SheetsSync = {
       return { success: false, error: 'Sync not configured' };
     }
 
+    // Look up real name from local cache
+    const realName = this.lookupName(postInfo.username) || '';
+
     const record = {
       action: 'addDownload',
       shortcode: postInfo.shortcode,
       url: postInfo.url || `https://www.instagram.com/p/${postInfo.shortcode}/`,
+      real_name: realName,
       username: postInfo.username,
       post_type: postInfo.post_type || 'POST',
       media_count: postInfo.media_count || 0,
@@ -405,17 +409,23 @@ const SheetsSync = {
       return { success: false, error: 'Sync not configured' };
     }
 
-    const records = downloads.map(postInfo => ({
-      shortcode: postInfo.shortcode,
-      url: postInfo.url || `https://www.instagram.com/p/${postInfo.shortcode}/`,
-      username: postInfo.username,
-      post_type: postInfo.post_type || 'POST',
-      media_count: postInfo.media_count || 0,
-      comment_count: postInfo.comment_count || 0,
-      caption: postInfo.caption || '',
-      downloader: this.config.userId,
-      post_date: postInfo.posted_at || ''
-    }));
+    const records = downloads.map(postInfo => {
+      // Look up real name from local cache
+      const realName = this.lookupName(postInfo.username) || '';
+
+      return {
+        shortcode: postInfo.shortcode,
+        url: postInfo.url || `https://www.instagram.com/p/${postInfo.shortcode}/`,
+        real_name: realName,
+        username: postInfo.username,
+        post_type: postInfo.post_type || 'POST',
+        media_count: postInfo.media_count || 0,
+        comment_count: postInfo.comment_count || 0,
+        caption: postInfo.caption || '',
+        downloader: this.config.userId,
+        post_date: postInfo.posted_at || ''
+      };
+    });
 
     try {
       const response = await this._fetch(this.config.webAppUrl, {

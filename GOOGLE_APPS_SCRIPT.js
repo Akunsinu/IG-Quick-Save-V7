@@ -6,7 +6,7 @@
  *
  * 1. Create a new Google Sheet
  * 2. Add three sheets (tabs):
- *    - "Downloads" with headers: timestamp, shortcode, url, username, post_type, media_count, comment_count, caption, downloader, post_date
+ *    - "Downloads" with headers: timestamp, shortcode, url, real_name, username, post_type, media_count, comment_count, caption, downloader, post_date
  *    - "Profiles" with headers: username, total_posts, downloaded_count, completion_pct, last_updated
  *    - "Names" with headers: real_name, username (maps Instagram usernames to real names for file naming)
  * 3. Go to Extensions > Apps Script
@@ -241,6 +241,7 @@ function addDownload(ss, data) {
     new Date().toISOString(),                           // timestamp
     data.shortcode || '',                               // shortcode
     data.url || `https://www.instagram.com/p/${data.shortcode}/`,  // url
+    data.real_name || '',                               // real_name
     data.username || '',                                // username
     data.post_type || 'POST',                           // post_type
     data.media_count || 0,                              // media_count
@@ -299,6 +300,7 @@ function addBatchDownloads(ss, downloads) {
       new Date().toISOString(),
       data.shortcode || '',
       data.url || `https://www.instagram.com/p/${data.shortcode}/`,  // url
+      data.real_name || '',                                          // real_name
       data.username || '',
       data.post_type || 'POST',
       data.media_count || 0,
@@ -589,6 +591,7 @@ function testAddDownload() {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const result = addDownload(ss, {
     shortcode: 'TEST123456',
+    real_name: 'Test User',
     username: 'testuser',
     post_type: 'POST',
     media_count: 1,

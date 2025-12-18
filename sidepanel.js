@@ -620,11 +620,27 @@ function buildFilePrefix(postInfo) {
 }
 
 // Build custom filename: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode_comments.ext
-function buildCommentsFilename(postInfo, extension) {
+async function buildCommentsFilename(postInfo, extension) {
+  const username = postInfo.username || 'unknown';
   const folderName = buildFolderName(postInfo);
   const filePrefix = buildFilePrefix(postInfo);
 
-  return `Instagram/${folderName}/comments/${filePrefix}_comments.${extension}`;
+  // Get real name from background for parent folder
+  let parentFolder = username;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'checkNameMapping',
+      data: { username }
+    });
+    if (response?.enabled && response?.hasMapping && response?.realName) {
+      const sanitizedRealName = response.realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
+      parentFolder = `${sanitizedRealName} - ${username}`;
+    }
+  } catch (error) {
+    console.error('[SidePanel] Error getting name mapping:', error);
+  }
+
+  return `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.${extension}`;
 }
 
 // Download comments only (JSON)
@@ -637,7 +653,7 @@ downloadJsonBtn.addEventListener('click', async () => {
   setButtonLoading(downloadJsonBtn, true);
   showStatus('info', '⏳ Downloading comments as JSON...');
 
-  const filename = buildCommentsFilename(extractedData.comments.post_info || {}, 'json');
+  const filename = await buildCommentsFilename(extractedData.comments.post_info || {}, 'json');
   const saveAs = askWhereToSaveCheckbox?.checked || false;
 
   port.postMessage({
@@ -663,7 +679,7 @@ downloadCsvBtn.addEventListener('click', async () => {
   setButtonLoading(downloadCsvBtn, true);
   showStatus('info', '⏳ Downloading comments as CSV...');
 
-  const filename = buildCommentsFilename(extractedData.comments.post_info || {}, 'csv');
+  const filename = await buildCommentsFilename(extractedData.comments.post_info || {}, 'csv');
   const saveAs = askWhereToSaveCheckbox?.checked || false;
 
   port.postMessage({
