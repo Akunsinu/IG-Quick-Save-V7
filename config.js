@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.3',
-  VERSION_NAME: 'V8.0.3 - Viewer Comment Export Real Name Support',
+  VERSION: '8.0.4',
+  VERSION_NAME: 'V8.0.4 - Viewer Export Folder Path Fix',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================
