@@ -261,7 +261,8 @@ async function scanForAccounts(dirHandle, path = '', depth = 0) {
             }
             scannedAccounts[username].postFolders.push({
               handle: entry,
-              metadata: metadata
+              metadata: metadata,
+              sourcePath: path + entry.name  // Store full path for exports (e.g., "Instagram/RealName - username/post_folder")
             });
             scannedAccounts[username].postCount++;
 
@@ -409,12 +410,12 @@ async function loadSelectedAccounts() {
       const accountData = scannedAccounts[username];
       if (!accountData) continue;
 
-      for (const { handle, metadata } of accountData.postFolders) {
+      for (const { handle, metadata, sourcePath } of accountData.postFolders) {
         loadedCount++;
         updateLoadingText(`Loading posts... ${loadedCount}/${totalPosts}`);
 
         try {
-          const post = await loadPost(handle, metadata);
+          const post = await loadPost(handle, metadata, sourcePath);
           if (post) {
             posts.push(post);
           }
@@ -643,6 +644,7 @@ async function findMetadata(dirHandle) {
 
 // Load a post from a folder
 async function loadPost(dirHandle, metadata, sourcePath = '') {
+  console.log('[Viewer] loadPost called with sourcePath:', sourcePath);
   const post = {
     ...metadata,
     media: [],
