@@ -192,7 +192,8 @@ async function selectFolder() {
   try {
     console.log('Opening folder picker...');
     const dirHandle = await window.showDirectoryPicker();
-    console.log('Folder selected:', dirHandle.name);
+    console.log('[Viewer] Folder selected:', dirHandle.name);
+    console.log('[Viewer] Starting path will be:', dirHandle.name + '/');
     rootDirHandle = dirHandle;
 
     welcomeScreen.classList.add('hidden');
@@ -202,7 +203,9 @@ async function selectFolder() {
     // Phase 1: Scan for accounts (metadata only, no media loading)
     scannedAccounts = {};
     // Start path with root folder name (e.g., "Instagram/") so exports preserve full structure
-    await scanForAccounts(dirHandle, dirHandle.name + '/');
+    const startingPath = dirHandle.name + '/';
+    console.log('[Viewer] Calling scanForAccounts with startingPath:', startingPath);
+    await scanForAccounts(dirHandle, startingPath);
 
     const accountNames = Object.keys(scannedAccounts);
     console.log('Scan complete. Found', accountNames.length, 'accounts');
@@ -260,10 +263,12 @@ async function scanForAccounts(dirHandle, path = '', depth = 0) {
                 latestPost: null
               };
             }
+            const fullSourcePath = path + entry.name;
+            console.log('[Viewer] Storing post folder. path:', path, 'entry.name:', entry.name, 'fullSourcePath:', fullSourcePath);
             scannedAccounts[username].postFolders.push({
               handle: entry,
               metadata: metadata,
-              sourcePath: path + entry.name  // Store full path for exports (e.g., "Instagram/RealName - username/post_folder")
+              sourcePath: fullSourcePath  // Store full path for exports (e.g., "Instagram/RealName - username/post_folder")
             });
             scannedAccounts[username].postCount++;
 
@@ -1769,13 +1774,23 @@ async function exportAllComments() {
     // Use the source path where the post was loaded from
     // This preserves the original folder structure including real name prefix
     const username = post.username || 'unknown';
-    const basePath = post.sourcePath
-      ? `${post.sourcePath}/comments/screenshots`
-      : `Instagram/${username}/${buildFilePrefix(post)}/comments/screenshots`;
+    console.log('[Viewer] Export All Comments - post.sourcePath:', post.sourcePath);
+
+    // Build base path, ensuring Instagram/ prefix is present
+    let basePath;
+    if (post.sourcePath) {
+      // Ensure path starts with "Instagram/" for proper folder organization
+      const normalizedPath = post.sourcePath.startsWith('Instagram/')
+        ? post.sourcePath
+        : `Instagram/${post.sourcePath}`;
+      basePath = `${normalizedPath}/comments/screenshots`;
+    } else {
+      basePath = `Instagram/${username}/${buildFilePrefix(post)}/comments/screenshots`;
+    }
 
     // Extract real name from source path for filename prefix
     const realName = extractRealNameFromPath(post.sourcePath, username);
-    console.log('[Viewer] Export path:', basePath, '| realName from path:', realName);
+    console.log('[Viewer] Export All Comments - basePath:', basePath, '| realName from path:', realName);
 
     // Initialize avatar cache from post.avatars (already base64)
     const avatarCache = { ...(post.avatars || {}) };
@@ -2208,14 +2223,38 @@ async function exportCommentScreenshot(commentEl) {
       allowTaint: true
     });
 
-    // Build filename using unified format (with real name prefix)
-    const filename = buildCommentFilename(post, comment, commentIndex, realName) + '.png';
+    // Build full path using sourcePath, ensuring Instagram/ prefix is present
+    let basePath;
+    if (post.sourcePath) {
+      const normalizedPath = post.sourcePath.startsWith('Instagram/')
+        ? post.sourcePath
+        : `Instagram/${post.sourcePath}`;
+      basePath = `${normalizedPath}/comments/screenshots`;
+    } else {
+      basePath = `Instagram/${postUsername}/${buildFilePrefix(post)}/comments/screenshots`;
+    }
 
-    // Download
-    const link = document.createElement('a');
-    link.download = filename;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+    // Build filename using unified format (with real name prefix)
+    const commentFilename = buildCommentFilename(post, comment, commentIndex, realName);
+    const fullPath = `${basePath}/${commentFilename}.png`;
+    const dataUrl = canvas.toDataURL('image/png');
+
+    console.log('[Viewer] Single comment export - basePath:', basePath, 'fullPath:', fullPath);
+
+    // Download using chrome.downloads API for folder path support
+    await new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({
+        action: 'downloadCommentScreenshot',
+        dataUrl: dataUrl,
+        filename: fullPath
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          reject(chrome.runtime.lastError);
+        } else {
+          resolve(response);
+        }
+      });
+    });
 
     // Cleanup
     document.body.removeChild(container);
@@ -2378,10 +2417,16 @@ async function bulkExportCommentsForAccount(targetUsername) {
       }
       collectComments(post.comments);
 
-      // Use the source path where the post was loaded from
-      const basePath = post.sourcePath
-        ? `${post.sourcePath}/comments/screenshots`
-        : `Instagram/${targetUsername}/${buildFilePrefix(post)}/comments/screenshots`;
+      // Use the source path where the post was loaded from, ensuring Instagram/ prefix
+      let basePath;
+      if (post.sourcePath) {
+        const normalizedPath = post.sourcePath.startsWith('Instagram/')
+          ? post.sourcePath
+          : `Instagram/${post.sourcePath}`;
+        basePath = `${normalizedPath}/comments/screenshots`;
+      } else {
+        basePath = `Instagram/${targetUsername}/${buildFilePrefix(post)}/comments/screenshots`;
+      }
 
       // Extract real name from source path for filename prefix
       const realName = extractRealNameFromPath(post.sourcePath, targetUsername);
@@ -2575,10 +2620,16 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
       }
       collectComments(post.comments);
 
-      // Use the source path where the post was loaded from
-      const basePath = post.sourcePath
-        ? `${post.sourcePath}/comments/screenshots`
-        : `Instagram/${targetUsername}/${buildFilePrefix(post)}/comments/screenshots`;
+      // Use the source path where the post was loaded from, ensuring Instagram/ prefix
+      let basePath;
+      if (post.sourcePath) {
+        const normalizedPath = post.sourcePath.startsWith('Instagram/')
+          ? post.sourcePath
+          : `Instagram/${post.sourcePath}`;
+        basePath = `${normalizedPath}/comments/screenshots`;
+      } else {
+        basePath = `Instagram/${targetUsername}/${buildFilePrefix(post)}/comments/screenshots`;
+      }
 
       // Extract real name from source path for filename prefix
       const realName = extractRealNameFromPath(post.sourcePath, targetUsername);

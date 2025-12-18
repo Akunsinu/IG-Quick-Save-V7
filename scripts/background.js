@@ -417,6 +417,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === 'downloadCommentScreenshot') {
     // Download comment screenshot to organized folder path
     const { dataUrl, filename } = message;
+    console.log('[Background] downloadCommentScreenshot called with filename:', filename);
+    console.log('[Background] filename length:', filename?.length, 'starts with:', filename?.substring(0, 80));
     chrome.downloads.download({
       url: dataUrl,
       filename: filename,
@@ -424,9 +426,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }, (downloadId) => {
       if (chrome.runtime.lastError) {
         console.error('[Background] Comment screenshot download failed:', chrome.runtime.lastError);
+        console.error('[Background] Attempted filename was:', filename);
         sendResponse({ success: false, error: chrome.runtime.lastError.message });
       } else {
-        console.log('[Background] Comment screenshot downloaded:', filename);
+        console.log('[Background] Comment screenshot downloaded successfully to:', filename);
         sendResponse({ success: true, downloadId });
       }
     });

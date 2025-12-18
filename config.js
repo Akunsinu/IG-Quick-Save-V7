@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.4',
-  VERSION_NAME: 'V8.0.4 - Viewer Export Folder Path Fix',
+  VERSION: '8.0.6',
+  VERSION_NAME: 'V8.0.6 - Ensure Instagram Prefix in Export Path',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================
