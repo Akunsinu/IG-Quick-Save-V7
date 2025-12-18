@@ -201,7 +201,8 @@ async function selectFolder() {
 
     // Phase 1: Scan for accounts (metadata only, no media loading)
     scannedAccounts = {};
-    await scanForAccounts(dirHandle);
+    // Start path with root folder name (e.g., "Instagram/") so exports preserve full structure
+    await scanForAccounts(dirHandle, dirHandle.name + '/');
 
     const accountNames = Object.keys(scannedAccounts);
     console.log('Scan complete. Found', accountNames.length, 'accounts');
