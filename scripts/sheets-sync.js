@@ -371,7 +371,8 @@ const SheetsSync = {
       comment_count: postInfo.comment_count || 0,
       caption: postInfo.caption || '',
       downloader: this.config.userId,
-      post_date: postInfo.posted_at || ''
+      post_date: postInfo.posted_at || '',
+      collaborators: Array.isArray(postInfo.collaborators) ? postInfo.collaborators.join(', ') : ''
     };
 
     try {
@@ -423,7 +424,8 @@ const SheetsSync = {
         comment_count: postInfo.comment_count || 0,
         caption: postInfo.caption || '',
         downloader: this.config.userId,
-        post_date: postInfo.posted_at || ''
+        post_date: postInfo.posted_at || '',
+        collaborators: Array.isArray(postInfo.collaborators) ? postInfo.collaborators.join(', ') : ''
       };
     });
 

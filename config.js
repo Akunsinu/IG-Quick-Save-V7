@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.6',
-  VERSION_NAME: 'V8.0.6 - Ensure Instagram Prefix in Export Path',
+  VERSION: '8.0.7',
+  VERSION_NAME: 'V8.0.7 - Add Collaborators Column to Google Sheets',
   RELEASE_DATE: '2025-12-01',
 
   // ============================================================================

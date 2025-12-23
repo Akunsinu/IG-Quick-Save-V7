@@ -6,7 +6,7 @@
  *
  * 1. Create a new Google Sheet
  * 2. Add three sheets (tabs):
- *    - "Downloads" with headers: timestamp, shortcode, url, real_name, username, post_type, media_count, comment_count, caption, downloader, post_date
+ *    - "Downloads" with headers: timestamp, shortcode, url, real_name, username, post_type, media_count, comment_count, caption, downloader, post_date, collaborators
  *    - "Profiles" with headers: username, total_posts, downloaded_count, completion_pct, last_updated
  *    - "Names" with headers: real_name, username (maps Instagram usernames to real names for file naming)
  * 3. Go to Extensions > Apps Script
@@ -248,7 +248,8 @@ function addDownload(ss, data) {
     data.comment_count || 0,                            // comment_count
     data.caption || '',                                 // caption (full)
     data.downloader || '',                              // downloader
-    data.post_date || ''                                // post_date
+    data.post_date || '',                               // post_date
+    data.collaborators || ''                            // collaborators (comma-separated)
   ];
 
   sheet.appendRow(row);
@@ -307,7 +308,8 @@ function addBatchDownloads(ss, downloads) {
       data.comment_count || 0,
       data.caption || '',                                            // caption (full)
       data.downloader || '',
-      data.post_date || ''
+      data.post_date || '',
+      data.collaborators || ''                                       // collaborators (comma-separated)
     ]);
   });
 
