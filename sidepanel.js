@@ -1204,33 +1204,74 @@ stopBatchBtn.addEventListener('click', () => {
   showStatus('warning', '⏹️ Batch processing stopped');
 });
 
+// Track countdown interval to prevent duplicates
+let batchCountdownInterval = null;
+
+// Format duration for display
+function formatCountdown(ms) {
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
+
 // Update batch progress
 function updateBatchProgress(data) {
-  const { current, total, url, successCount: success, failedUrls: failed, skippedCount: skipped, isPaused, pauseReason, pauseDuration } = data;
+  const { current, total, url, successCount: success, failedUrls: failed, skippedCount: skipped, isPaused, pauseReason, pauseDuration, pauseEndTime, isProactivePause, requestBudget } = data;
 
   batchProgressText.textContent = `${current}/${total}`;
   batchProgressBar.style.width = `${(current / total) * 100}%`;
   batchCurrentUrl.textContent = url;
 
-  // Handle pause state (rate limit or cooldown)
-  if (isPaused && pauseReason) {
-    batchStatus.textContent = `⏸️ ${pauseReason}`;
-    batchStatus.style.color = '#f57c00';
-    batchProgressBar.style.background = '#f57c00';
+  // Clear existing countdown interval
+  if (batchCountdownInterval) {
+    clearInterval(batchCountdownInterval);
+    batchCountdownInterval = null;
+  }
 
-    // Show countdown if we have a pause duration
-    if (pauseDuration) {
-      let remaining = Math.ceil(pauseDuration / 1000);
-      const countdownInterval = setInterval(() => {
-        remaining--;
+  // Handle pause state (rate limit, cooldown, or proactive pause)
+  if (isPaused && pauseReason) {
+    // Set color based on pause type
+    if (isProactivePause) {
+      batchStatus.style.color = '#2196f3'; // Blue for proactive pause
+      batchProgressBar.style.background = '#2196f3';
+    } else {
+      batchStatus.style.color = '#f57c00'; // Orange for rate limit/cooldown
+      batchProgressBar.style.background = '#f57c00';
+    }
+
+    // Show countdown using pauseEndTime for more accurate timing
+    if (pauseEndTime || pauseDuration) {
+      const endTime = pauseEndTime || (Date.now() + pauseDuration);
+
+      const updateCountdown = () => {
+        const remaining = Math.max(0, endTime - Date.now());
         if (remaining > 0) {
-          batchStatus.textContent = `⏸️ Resuming in ${remaining}s...`;
+          const icon = isProactivePause ? '⏳' : '⏸️';
+          batchStatus.textContent = `${icon} Resuming in ${formatCountdown(remaining)}...`;
         } else {
-          clearInterval(countdownInterval);
+          if (batchCountdownInterval) {
+            clearInterval(batchCountdownInterval);
+            batchCountdownInterval = null;
+          }
           batchStatus.style.color = '';
           batchProgressBar.style.background = '';
+          batchStatus.textContent = 'Resuming...';
         }
-      }, 1000);
+      };
+
+      updateCountdown(); // Initial update
+      batchCountdownInterval = setInterval(updateCountdown, 1000);
+    } else {
+      batchStatus.textContent = `⏸️ ${pauseReason}`;
+    }
+
+    // Show request budget info if available
+    if (requestBudget && requestBudget.current !== undefined) {
+      const budgetInfo = ` [${requestBudget.current}/${requestBudget.max} requests]`;
+      batchCurrentUrl.textContent = url + budgetInfo;
     }
   } else if (skipped > 0) {
     batchStatus.textContent = `Processing post ${current} of ${total}... (${skipped} skipped)`;
@@ -1249,7 +1290,13 @@ function updateBatchProgress(data) {
 
 // Handle batch complete
 function handleBatchComplete(data) {
-  const { successCount: success, failedUrls: failed, total, skippedCount: skipped, stoppedDueToRateLimit } = data;
+  const { successCount: success, failedUrls: failed, total, skippedCount: skipped, stoppedDueToRateLimit, canResume, resumeAfterMs } = data;
+
+  // Clear any running countdown
+  if (batchCountdownInterval) {
+    clearInterval(batchCountdownInterval);
+    batchCountdownInterval = null;
+  }
 
   batchProgress.classList.add('hidden');
   startBatchBtn.disabled = false;
@@ -1258,7 +1305,9 @@ function handleBatchComplete(data) {
 
   // Show rate limit warning if batch was stopped due to 429 errors
   if (stoppedDueToRateLimit) {
-    showStatus('error', `🚫 Batch stopped due to rate limiting. Downloaded ${success} posts. Wait a few minutes before trying again.`);
+    const waitMinutes = resumeAfterMs ? Math.ceil(resumeAfterMs / 60000) : 10;
+    const resumeMsg = canResume ? ' Your progress has been saved - you can resume later.' : '';
+    showStatus('error', `🚫 Batch stopped due to rate limiting. Downloaded ${success} posts. Wait ${waitMinutes}+ minutes before trying again.${resumeMsg}`);
     return;
   }
 

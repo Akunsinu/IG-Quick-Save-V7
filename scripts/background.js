@@ -49,8 +49,105 @@ let batchState = {
   consecutiveErrors: 0,
   last429Time: null,
   currentPauseDuration: 0,
-  isPaused: false
+  isPaused: false,
+  // Request budget tracking (for proactive rate limiting)
+  requestTimestamps: []
 };
+
+// ===== Request Budget System (Proactive Rate Limiting) =====
+
+const requestBudget = {
+  // Track request timestamps within sliding window
+  requests: [],
+
+  // Record a new request
+  recordRequest() {
+    this.requests.push(Date.now());
+    // Clean up old requests outside the window
+    this.cleanup();
+  },
+
+  // Remove requests outside the sliding window
+  cleanup() {
+    const windowMs = CONFIG.REQUEST_BUDGET?.WINDOW_MS || 60000;
+    const now = Date.now();
+    this.requests = this.requests.filter(t => now - t < windowMs);
+  },
+
+  // Check if we can make another request
+  canMakeRequest() {
+    if (!CONFIG.REQUEST_BUDGET?.ENABLED) return true;
+    this.cleanup();
+    const maxRequests = CONFIG.REQUEST_BUDGET?.MAX_REQUESTS || 40;
+    return this.requests.length < maxRequests;
+  },
+
+  // Get current request count in window
+  getRequestCount() {
+    this.cleanup();
+    return this.requests.length;
+  },
+
+  // Check if we're approaching the limit (should pause proactively)
+  shouldPauseProactively() {
+    if (!CONFIG.REQUEST_BUDGET?.ENABLED) return false;
+    this.cleanup();
+    const threshold = CONFIG.REQUEST_BUDGET?.PAUSE_THRESHOLD || 35;
+    return this.requests.length >= threshold;
+  },
+
+  // Calculate wait time until we can make another request
+  getWaitTime() {
+    if (this.canMakeRequest()) return 0;
+    const windowMs = CONFIG.REQUEST_BUDGET?.WINDOW_MS || 60000;
+    const oldest = this.requests[0];
+    return Math.max(0, (oldest + windowMs) - Date.now() + 1000); // +1s buffer
+  },
+
+  // Get status for UI display
+  getStatus() {
+    this.cleanup();
+    const maxRequests = CONFIG.REQUEST_BUDGET?.MAX_REQUESTS || 40;
+    const threshold = CONFIG.REQUEST_BUDGET?.PAUSE_THRESHOLD || 35;
+    return {
+      current: this.requests.length,
+      max: maxRequests,
+      threshold: threshold,
+      isNearLimit: this.requests.length >= threshold,
+      waitTime: this.getWaitTime()
+    };
+  }
+};
+
+// ===== Enhanced 429 Recovery =====
+
+function calculate429RecoveryTime(consecutiveErrors) {
+  const basePause = CONFIG.TIMING.BATCH_429_HANDLING?.PAUSE_DURATION || 300000;
+  const maxPause = CONFIG.TIMING.BATCH_429_HANDLING?.MAX_PAUSE_DURATION || 900000;
+  const jitterRange = CONFIG.TIMING.BATCH_429_HANDLING?.JITTER_RANGE || 60000;
+  const backoffMultiplier = CONFIG.TIMING.BATCH_429_HANDLING?.BACKOFF_MULTIPLIER || 1.5;
+
+  // Calculate base pause with exponential backoff
+  const calculatedPause = Math.min(
+    basePause * Math.pow(backoffMultiplier, consecutiveErrors - 1),
+    maxPause
+  );
+
+  // Add randomized jitter (+/- jitterRange)
+  const jitter = (Math.random() - 0.5) * 2 * jitterRange;
+
+  return Math.round(Math.max(basePause, calculatedPause + jitter));
+}
+
+// Format duration for display
+function formatDuration(ms) {
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
 
 // ===== Batch State Persistence (for resume capability) =====
 
@@ -1781,6 +1878,11 @@ chrome.runtime.onConnect.addListener((port) => {
           const status = SheetsSync.getStatus();
           port.postMessage({ type: 'sheetsStatus', data: status });
 
+        } else if (msg.action === 'getRequestBudgetStatus') {
+          // Get current request budget status for UI display
+          const status = requestBudget.getStatus();
+          port.postMessage({ type: 'requestBudgetStatus', data: status });
+
         } else if (msg.action === 'refreshSheetsCache') {
           // Force refresh cache from Sheets
           const result = await SheetsSync.refreshCache();
@@ -2053,9 +2155,48 @@ async function processNextBatchUrl() {
     return;
   }
 
+  // ===== Proactive Rate Limiting Check =====
+  // Check if we should pause to avoid hitting rate limits
+  if (requestBudget.shouldPauseProactively()) {
+    const waitTime = CONFIG.REQUEST_BUDGET?.PROACTIVE_PAUSE_MS || 30000;
+    const budgetStatus = requestBudget.getStatus();
+    console.log(`[Background] ⚠️ Proactive pause: ${budgetStatus.current}/${budgetStatus.max} requests in last minute. Pausing ${waitTime/1000}s to avoid 429...`);
+
+    batchState.isPaused = true;
+
+    if (batchState.port) {
+      batchState.port.postMessage({
+        type: 'batchProgress',
+        data: {
+          current: batchState.currentIndex + 1,
+          total: batchState.queue.length,
+          url: 'Proactive pause...',
+          successCount: batchState.successCount,
+          skippedCount: batchState.skippedCount,
+          failedUrls: batchState.failedUrls,
+          isPaused: true,
+          pauseReason: `Proactive pause (${budgetStatus.current}/${budgetStatus.max} requests) - avoiding rate limit`,
+          pauseDuration: waitTime,
+          isProactivePause: true,
+          requestBudget: budgetStatus
+        }
+      });
+    }
+
+    setTimeout(() => {
+      batchState.isPaused = false;
+      processNextBatchUrl();
+    }, waitTime);
+    return;
+  }
+
+  // Record this request in the budget tracker
+  requestBudget.recordRequest();
+
   const url = batchState.queue[batchState.currentIndex];
   const shortcode = extractShortcode(url);
-  console.log('[Background] Processing URL', batchState.currentIndex + 1, '/', batchState.queue.length, ':', url, 'shortcode:', shortcode);
+  const budgetStatus = requestBudget.getStatus();
+  console.log('[Background] Processing URL', batchState.currentIndex + 1, '/', batchState.queue.length, ':', url, 'shortcode:', shortcode, `[Budget: ${budgetStatus.current}/${budgetStatus.max}]`);
 
   // Check if already downloaded (if skip option is enabled)
   if (batchState.skipDownloaded && shortcode) {
@@ -2339,15 +2480,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         batchState.consecutiveErrors++;
         batchState.last429Time = Date.now();
 
-        // Calculate pause duration with exponential backoff
-        const basePause = CONFIG.TIMING.BATCH_429_HANDLING?.PAUSE_DURATION || 120000;
-        const backoffMultiplier = CONFIG.TIMING.BATCH_429_HANDLING?.BACKOFF_MULTIPLIER || 2;
-        batchState.currentPauseDuration = basePause * Math.pow(backoffMultiplier, batchState.consecutiveErrors - 1);
+        // Calculate pause duration with enhanced recovery (randomized jitter)
+        batchState.currentPauseDuration = calculate429RecoveryTime(batchState.consecutiveErrors);
 
         const maxRetries = CONFIG.TIMING.BATCH_429_HANDLING?.MAX_429_RETRIES || 3;
 
         if (batchState.consecutiveErrors >= maxRetries) {
-          // Too many 429 errors, stop batch processing
+          // Too many 429 errors, stop batch processing but save state for resume
           console.error('[Background] 🛑 Too many 429 errors, stopping batch processing');
           batchState.isProcessing = false;
           batchState.failedUrls.push({
@@ -2357,6 +2496,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             timestamp: Date.now()
           });
 
+          // Save state for resume capability
+          await saveBatchState();
+          console.log('[Background] 💾 Batch state saved - can resume later');
+
           if (batchState.port) {
             batchState.port.postMessage({
               type: 'batchComplete',
@@ -2365,16 +2508,23 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                 skippedCount: batchState.skippedCount,
                 failedUrls: batchState.failedUrls,
                 total: batchState.queue.length,
-                stoppedDueToRateLimit: true
+                stoppedDueToRateLimit: true,
+                canResume: true,
+                resumeAfterMs: 600000 // Suggest waiting 10 minutes before resume
               }
             });
           }
           return;
         }
 
-        // Pause and retry this URL
-        console.warn(`[Background] 🚫 Rate limited! Pausing for ${batchState.currentPauseDuration / 1000} seconds before retry...`);
+        // Pause and retry this URL with enhanced recovery
+        const pauseMinutes = Math.round(batchState.currentPauseDuration / 60000);
+        const pauseSeconds = Math.round((batchState.currentPauseDuration % 60000) / 1000);
+        console.warn(`[Background] 🚫 Rate limited! Pausing for ${pauseMinutes}m ${pauseSeconds}s before retry (attempt ${batchState.consecutiveErrors}/${maxRetries})...`);
         batchState.isPaused = true;
+
+        // Save state in case browser closes during pause
+        await saveBatchState();
 
         if (batchState.port) {
           batchState.port.postMessage({
@@ -2387,8 +2537,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
               skippedCount: batchState.skippedCount,
               failedUrls: batchState.failedUrls,
               isPaused: true,
-              pauseReason: `Rate limited - pausing ${Math.round(batchState.currentPauseDuration / 1000)}s`,
-              pauseDuration: batchState.currentPauseDuration
+              pauseReason: `Rate limited - pausing ${formatDuration(batchState.currentPauseDuration)} (attempt ${batchState.consecutiveErrors}/${maxRetries})`,
+              pauseDuration: batchState.currentPauseDuration,
+              pauseEndTime: Date.now() + batchState.currentPauseDuration
             }
           });
         }
