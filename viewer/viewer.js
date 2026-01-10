@@ -2724,3 +2724,221 @@ async function bulkExportCommentsForAccountSilent(targetUsername, onComplete) {
     onComplete(exportedCount, failCount);
   }
 }
+
+// ============================================================================
+// TRANSLATION FEATURE
+// ============================================================================
+
+// Initialize translator
+const translator = typeof Translator !== 'undefined' ? new Translator() : null;
+
+// Translation button element
+const translatePostBtn = document.getElementById('translatePostBtn');
+
+// Update translate button state based on post translation status
+function updateTranslateButtonState(post) {
+  if (!translatePostBtn) return;
+
+  if (!translator) {
+    translatePostBtn.style.display = 'none';
+    return;
+  }
+
+  translatePostBtn.style.display = 'inline-flex';
+  translatePostBtn.disabled = false;
+
+  if (post.translation_status === 'completed') {
+    translatePostBtn.className = 'translate-btn translated';
+    translatePostBtn.innerHTML = '✓ Translated';
+  } else if (post.translation_status === 'translating') {
+    translatePostBtn.className = 'translate-btn translating';
+    translatePostBtn.innerHTML = '🌐 Translating...';
+    translatePostBtn.disabled = true;
+  } else {
+    translatePostBtn.className = 'translate-btn';
+    translatePostBtn.innerHTML = '🌐 Translate';
+  }
+}
+
+// Translate current post
+async function translateCurrentPost() {
+  if (!translator) {
+    alert('Translation not available');
+    return;
+  }
+
+  const post = posts[currentPostIndex];
+  if (!post) return;
+
+  // Check if already translated
+  if (post.translation_status === 'completed') {
+    // Toggle to show/hide translations
+    toggleTranslationView(post);
+    return;
+  }
+
+  // Update button to show translating state
+  post.translation_status = 'translating';
+  updateTranslateButtonState(post);
+
+  try {
+    // Translate the post with progress updates
+    const translatedPost = await translator.translatePost(post, (completed, total) => {
+      if (translatePostBtn) {
+        translatePostBtn.innerHTML = `🌐 ${completed}/${total}`;
+      }
+    });
+
+    // Update the post in the posts array
+    posts[currentPostIndex] = translatedPost;
+
+    // Save translation to localStorage
+    translator.saveToStorage(translatedPost);
+
+    // Update the UI
+    updateTranslateButtonState(translatedPost);
+    updateModalWithTranslations(translatedPost);
+
+  } catch (error) {
+    console.error('Translation failed:', error);
+    post.translation_status = 'failed';
+    updateTranslateButtonState(post);
+
+    if (error.message === 'QUOTA_EXCEEDED') {
+      alert('Translation API quota exceeded. Please try again tomorrow.');
+    } else {
+      alert('Translation failed. Please try again.');
+    }
+  }
+}
+
+// Toggle between showing translated and original text
+function toggleTranslationView(post) {
+  const showTranslated = document.querySelectorAll('.translated-text').length > 0;
+
+  if (showTranslated) {
+    // Currently showing translated - switch to original only
+    showOriginalOnly(post);
+    if (translatePostBtn) {
+      translatePostBtn.innerHTML = '🌐 Show Translation';
+    }
+  } else {
+    // Currently showing original - show translated
+    updateModalWithTranslations(post);
+    if (translatePostBtn) {
+      translatePostBtn.innerHTML = '✓ Translated';
+    }
+  }
+}
+
+// Show only original text (no translations)
+function showOriginalOnly(post) {
+  // Update caption
+  if (post.caption && modalCaption) {
+    const captionBody = document.getElementById('modalCaptionBody');
+    if (captionBody) {
+      const username = post.username || 'Unknown';
+      captionBody.innerHTML = `<span class="modal-caption-username">${escapeHtml(username)}</span>${escapeHtml(post.caption)}`;
+    }
+  }
+
+  // Update comments
+  const commentTexts = document.querySelectorAll('.comment-text');
+  commentTexts.forEach(el => {
+    const originalText = el.dataset.original || '';
+    el.innerHTML = escapeHtml(originalText);
+    el.classList.remove('translated-text');
+  });
+}
+
+// Update modal with translated content
+function updateModalWithTranslations(post) {
+  // Update caption if translated
+  if (post.caption_en && post.caption_en !== post.caption && modalCaption) {
+    const captionBody = document.getElementById('modalCaptionBody');
+    if (captionBody) {
+      const username = post.username || 'Unknown';
+      captionBody.innerHTML = `
+        <span class="modal-caption-username">${escapeHtml(username)}</span>
+        <span class="translated-text">${escapeHtml(post.caption_en)}</span>
+        <div class="original-text">${escapeHtml(post.caption)}</div>
+      `;
+    }
+  }
+
+  // Update comments with translations
+  updateCommentsWithTranslations(post.comments);
+}
+
+// Recursively update comments with translations
+function updateCommentsWithTranslations(comments, parentIndex = '') {
+  if (!comments) return;
+
+  comments.forEach((comment, idx) => {
+    const commentId = parentIndex ? `${parentIndex}-${idx}` : `${idx}`;
+    const commentEl = document.querySelector(`.comment[data-comment-id="${commentId}"]`);
+
+    if (commentEl && comment.text_en && comment.text_en !== comment.text) {
+      const textEl = commentEl.querySelector('.comment-text');
+      if (textEl) {
+        textEl.innerHTML = `
+          <span class="translated-text">${escapeHtml(comment.text_en)}</span>
+          <div class="original-text">${escapeHtml(comment.text)}</div>
+        `;
+      }
+    }
+
+    // Update replies recursively
+    if (comment.replies && comment.replies.length > 0) {
+      updateCommentsWithTranslations(comment.replies, commentId);
+    }
+  });
+}
+
+// Load cached translation when opening modal
+function loadCachedTranslation(post) {
+  if (!translator || !post.shortcode) return post;
+
+  // Check if we already have translation in memory
+  if (post.translation_status === 'completed') {
+    return post;
+  }
+
+  // Try to load from storage
+  const loadedPost = translator.loadFromStorage(post);
+  if (loadedPost.translation_status === 'completed') {
+    // Update the post in the array
+    const index = posts.findIndex(p => p.shortcode === post.shortcode);
+    if (index !== -1) {
+      posts[index] = loadedPost;
+    }
+    return loadedPost;
+  }
+
+  return post;
+}
+
+// Translate button event listener
+translatePostBtn?.addEventListener('click', translateCurrentPost);
+
+// Modify openModal to check for cached translations
+const originalOpenModal = openModal;
+openModal = function(postIndex) {
+  // Load any cached translation first
+  let post = posts[postIndex];
+  post = loadCachedTranslation(post);
+  posts[postIndex] = post;
+
+  // Call original openModal
+  originalOpenModal(postIndex);
+
+  // Update translate button state
+  updateTranslateButtonState(post);
+
+  // If already translated, show the translations
+  if (post.translation_status === 'completed') {
+    setTimeout(() => {
+      updateModalWithTranslations(post);
+    }, 100);
+  }
+};

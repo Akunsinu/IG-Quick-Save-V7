@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.7',
-  VERSION_NAME: 'V8.0.7 - Add Collaborators Column to Google Sheets',
-  RELEASE_DATE: '2025-12-01',
+  VERSION: '8.0.9',
+  VERSION_NAME: 'V8.0.9 - Add Translation Feature to Archive Viewer',
+  RELEASE_DATE: '2026-01-08',
 
   // ============================================================================
   // TIMING & DELAYS
