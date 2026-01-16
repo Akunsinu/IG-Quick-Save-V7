@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.1.1',
-  VERSION_NAME: 'V8.1.1 - Conservative Rate Limiting',
+  VERSION: '8.1.2',
+  VERSION_NAME: 'V8.1.2 - Conservative Rate Limiting + Alarm Fix',
   RELEASE_DATE: '2026-01-16',
 
   // ============================================================================

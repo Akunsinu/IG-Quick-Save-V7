@@ -3,6 +3,29 @@
 importScripts('../config.js');
 importScripts('./sheets-sync.js');
 
+// Alarm name for cooldown resume
+const BATCH_COOLDOWN_ALARM = 'batchCooldownResume';
+
+// Listen for alarms to resume batch processing after cooldown
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === BATCH_COOLDOWN_ALARM) {
+    console.log('[Background] ⏰ Cooldown alarm fired, resuming batch...');
+    processNextBatchUrl();
+  }
+});
+
+// Safe message sender - handles disconnected ports gracefully
+function safeSendToPort(port, message) {
+  if (!port) return false;
+  try {
+    port.postMessage(message);
+    return true;
+  } catch (e) {
+    console.log('[Background] Port disconnected, continuing without UI updates');
+    return false;
+  }
+}
+
 let currentData = {
   postData: null,
   comments: null,
@@ -2039,17 +2062,15 @@ async function processNextBatchUrl() {
     // Clear saved batch state since we completed successfully
     await clearSavedBatchState();
 
-    if (batchState.port) {
-      batchState.port.postMessage({
-        type: 'batchComplete',
-        data: {
-          successCount: batchState.successCount,
-          skippedCount: batchState.skippedCount,
-          failedUrls: batchState.failedUrls,
-          total: batchState.queue.length
-        }
-      });
-    }
+    safeSendToPort(batchState.port, {
+      type: 'batchComplete',
+      data: {
+        successCount: batchState.successCount,
+        skippedCount: batchState.skippedCount,
+        failedUrls: batchState.failedUrls,
+        total: batchState.queue.length
+      }
+    });
     return;
   }
 
@@ -2070,21 +2091,19 @@ async function processNextBatchUrl() {
       batchState.currentIndex++;
 
       // Send progress update with source info
-      if (batchState.port) {
-        batchState.port.postMessage({
-          type: 'batchProgress',
-          data: {
-            current: batchState.currentIndex,
-            total: batchState.queue.length,
-            url: url,
-            successCount: batchState.successCount,
-            skippedCount: batchState.skippedCount,
-            failedUrls: batchState.failedUrls,
-            skipped: true,
-            skipSource: downloadCheck.source
-          }
-        });
-      }
+      safeSendToPort(batchState.port, {
+        type: 'batchProgress',
+        data: {
+          current: batchState.currentIndex,
+          total: batchState.queue.length,
+          url: url,
+          successCount: batchState.successCount,
+          skippedCount: batchState.skippedCount,
+          failedUrls: batchState.failedUrls,
+          skipped: true,
+          skipSource: downloadCheck.source
+        }
+      });
 
       // Small delay before processing next
       setTimeout(() => processNextBatchUrl(), 100);
@@ -2093,20 +2112,18 @@ async function processNextBatchUrl() {
   }
 
   // Send progress update to popup
-  if (batchState.port) {
-    batchState.port.postMessage({
-      type: 'batchProgress',
-      data: {
-        current: batchState.currentIndex + 1,
-        total: batchState.queue.length,
-        url: url,
-        successCount: batchState.successCount,
-        skippedCount: batchState.skippedCount,
-        failedUrls: batchState.failedUrls,
-        skipped: false
-      }
-    });
-  }
+  safeSendToPort(batchState.port, {
+    type: 'batchProgress',
+    data: {
+      current: batchState.currentIndex + 1,
+      total: batchState.queue.length,
+      url: url,
+      successCount: batchState.successCount,
+      skippedCount: batchState.skippedCount,
+      failedUrls: batchState.failedUrls,
+      skipped: false
+    }
+  });
 
   try {
     // Navigate to the URL
@@ -2357,18 +2374,16 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             timestamp: Date.now()
           });
 
-          if (batchState.port) {
-            batchState.port.postMessage({
-              type: 'batchComplete',
-              data: {
-                successCount: batchState.successCount,
-                skippedCount: batchState.skippedCount,
-                failedUrls: batchState.failedUrls,
-                total: batchState.queue.length,
-                stoppedDueToRateLimit: true
-              }
-            });
-          }
+          safeSendToPort(batchState.port, {
+            type: 'batchComplete',
+            data: {
+              successCount: batchState.successCount,
+              skippedCount: batchState.skippedCount,
+              failedUrls: batchState.failedUrls,
+              total: batchState.queue.length,
+              stoppedDueToRateLimit: true
+            }
+          });
           return;
         }
 
@@ -2376,22 +2391,20 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         console.warn(`[Background] 🚫 Rate limited! Pausing for ${batchState.currentPauseDuration / 1000} seconds before retry...`);
         batchState.isPaused = true;
 
-        if (batchState.port) {
-          batchState.port.postMessage({
-            type: 'batchProgress',
-            data: {
-              current: batchState.currentIndex + 1,
-              total: batchState.queue.length,
-              url: tab.url,
-              successCount: batchState.successCount,
-              skippedCount: batchState.skippedCount,
-              failedUrls: batchState.failedUrls,
-              isPaused: true,
-              pauseReason: `Rate limited - pausing ${Math.round(batchState.currentPauseDuration / 1000)}s`,
-              pauseDuration: batchState.currentPauseDuration
-            }
-          });
-        }
+        safeSendToPort(batchState.port, {
+          type: 'batchProgress',
+          data: {
+            current: batchState.currentIndex + 1,
+            total: batchState.queue.length,
+            url: tab.url,
+            successCount: batchState.successCount,
+            skippedCount: batchState.skippedCount,
+            failedUrls: batchState.failedUrls,
+            isPaused: true,
+            pauseReason: `Rate limited - pausing ${Math.round(batchState.currentPauseDuration / 1000)}s`,
+            pauseDuration: batchState.currentPauseDuration
+          }
+        });
 
         // Don't increment currentIndex - we'll retry this URL
         setTimeout(() => {
@@ -2443,24 +2456,28 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (batchState.successCount > 0 && batchState.successCount % postsBeforeCooldown === 0) {
           console.log(`[Background] ☕ Cooldown: Taking a ${cooldownDuration/1000}s break after ${batchState.successCount} posts...`);
 
-          if (batchState.port) {
-            batchState.port.postMessage({
-              type: 'batchProgress',
-              data: {
-                current: batchState.currentIndex,
-                total: batchState.queue.length,
-                url: 'Cooldown break...',
-                successCount: batchState.successCount,
-                skippedCount: batchState.skippedCount,
-                failedUrls: batchState.failedUrls,
-                isPaused: true,
-                pauseReason: `Cooldown break (${cooldownDuration/1000}s) after ${batchState.successCount} posts`,
-                pauseDuration: cooldownDuration
-              }
-            });
-          }
+          const pauseEndTime = Date.now() + cooldownDuration;
 
-          baseDelay = cooldownDuration;
+          safeSendToPort(batchState.port, {
+            type: 'batchProgress',
+            data: {
+              current: batchState.currentIndex,
+              total: batchState.queue.length,
+              url: 'Cooldown break...',
+              successCount: batchState.successCount,
+              skippedCount: batchState.skippedCount,
+              failedUrls: batchState.failedUrls,
+              isPaused: true,
+              pauseReason: `Cooldown break (${cooldownDuration/1000}s) after ${batchState.successCount} posts`,
+              pauseDuration: cooldownDuration,
+              pauseEndTime: pauseEndTime
+            }
+          });
+
+          // Use chrome.alarms for long delays (survives service worker sleep)
+          chrome.alarms.create(BATCH_COOLDOWN_ALARM, { when: pauseEndTime });
+          console.log(`[Background] ⏰ Cooldown alarm set for ${new Date(pauseEndTime).toLocaleTimeString()}`);
+          return; // Don't continue - alarm will trigger processNextBatchUrl
         }
       }
 
