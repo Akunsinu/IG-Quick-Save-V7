@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.1.0',
-  VERSION_NAME: 'V8.1.0 - Improved Rate Limiting & Bug Fixes',
-  RELEASE_DATE: '2026-01-09',
+  VERSION: '8.1.1',
+  VERSION_NAME: 'V8.1.1 - Conservative Rate Limiting',
+  RELEASE_DATE: '2026-01-16',
 
   // ============================================================================
   // TIMING & DELAYS
@@ -32,8 +32,8 @@ const CONFIG = {
     HTML_GENERATION_TIMEOUT: 15000,           // Estimated HTML generation time (ms)
 
     // Batch processing
-    BATCH_DELAY_MIN: 8000,                    // Minimum delay between batch items (ms) - increased for rate limit safety
-    BATCH_DELAY_MAX: 12000,                   // Maximum delay between batch items (ms) - increased for rate limit safety
+    BATCH_DELAY_MIN: 8000,                    // Minimum delay between batch items (ms)
+    BATCH_DELAY_MAX: 12000,                   // Maximum delay between batch items (ms)
     BATCH_CONCURRENT_MAX: 3,                  // Max posts to process in parallel
     BATCH_RETRY_MAX: 2,                       // Max retries for failed batch items
     BATCH_RETRY_DELAY: 5000,                  // Delay before retrying failed item (ms)
@@ -49,17 +49,15 @@ const CONFIG = {
     // Cooldown periods (rest periods during large batches)
     BATCH_COOLDOWN: {
       ENABLED: true,                          // Enable cooldown periods
-      POSTS_BEFORE_COOLDOWN: 50,              // Take a break every 50 posts (reduced from 100)
-      COOLDOWN_DURATION: 180000,              // Rest for 3 minutes (increased from 60 seconds)
+      POSTS_BEFORE_COOLDOWN: 50,              // Take a break every 50 posts
+      COOLDOWN_DURATION: 120000,              // Rest for 2 minutes
     },
 
     // 429 Error handling
     BATCH_429_HANDLING: {
-      PAUSE_DURATION: 300000,                 // Pause for 5 minutes on 429 error (increased from 2 min)
-      MAX_PAUSE_DURATION: 900000,             // Maximum pause of 15 minutes
-      JITTER_RANGE: 60000,                    // +/- 1 minute randomization
+      PAUSE_DURATION: 900000,                 // Pause for 15 minutes on 429 error
       MAX_429_RETRIES: 3,                     // Max times to retry after 429 before stopping
-      BACKOFF_MULTIPLIER: 1.5,                // 1.5x the pause each time (reduced from 2x)
+      BACKOFF_MULTIPLIER: 1.5,                // 1.5x the pause each time
     },
 
     // Profile scraping (collecting post URLs from profiles)
@@ -79,47 +77,35 @@ const CONFIG = {
   RATE_LIMITS: {
     // GraphQL endpoint (faster, less strict)
     graphql: {
-      min: 1500,                              // Minimum delay between requests (ms) - doubled
-      max: 2500,                              // Maximum delay between requests (ms) - doubled
-      base: 1500,                             // Base delay (ms)
+      min: 800,                               // Minimum delay between requests (ms)
+      max: 1200,                              // Maximum delay between requests (ms)
+      base: 800,                              // Base delay (ms)
       backoffMultiplier: 1.5,                 // Increase delay after 429
     },
 
     // Main comment API endpoint
     commentApi: {
-      min: 3000,                              // Minimum delay between requests (ms) - doubled
-      max: 5000,                              // Maximum delay between requests (ms) - doubled
-      base: 3000,                             // Base delay (ms)
+      min: 1500,                              // Minimum delay between requests (ms)
+      max: 2500,                              // Maximum delay between requests (ms)
+      base: 1500,                             // Base delay (ms)
       backoffMultiplier: 2,                   // Increase delay after 429
     },
 
     // Reply/child comment API endpoint
     replyApi: {
-      min: 2000,                              // Minimum delay between requests (ms) - increased
-      max: 3500,                              // Maximum delay between requests (ms) - increased
-      base: 2000,                             // Base delay (ms)
+      min: 800,                               // Minimum delay between requests (ms)
+      max: 1200,                              // Maximum delay between requests (ms)
+      base: 800,                              // Base delay (ms)
       backoffMultiplier: 1.5,                 // Increase delay after 429
     },
 
-    // Reply pagination (more sensitive - Instagram monitors this closely)
+    // Reply pagination (more sensitive)
     replyPagination: {
-      min: 2000,                              // Minimum delay between requests (ms)
-      max: 4000,                              // Maximum delay between requests (ms)
-      base: 2000,                             // Base delay (ms)
+      min: 400,                               // Minimum delay between requests (ms)
+      max: 600,                               // Maximum delay between requests (ms)
+      base: 400,                              // Base delay (ms)
       backoffMultiplier: 1.5,                 // Increase delay after 429
     },
-  },
-
-  // ============================================================================
-  // REQUEST BUDGET (Proactive Rate Limiting)
-  // ============================================================================
-
-  REQUEST_BUDGET: {
-    ENABLED: true,                            // Enable proactive rate limiting
-    WINDOW_MS: 60000,                         // 1 minute sliding window
-    MAX_REQUESTS: 20,                         // Max 20 batch posts per minute (actual API calls limited by RATE_LIMITS)
-    PAUSE_THRESHOLD: 15,                      // Start warning at 15 requests
-    PROACTIVE_PAUSE_MS: 65000,                // Pause for 65 seconds (longer than WINDOW_MS to ensure budget clears)
   },
 
   // ============================================================================
