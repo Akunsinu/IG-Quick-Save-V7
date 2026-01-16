@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.10',
-  VERSION_NAME: 'V8.0.10 - Fix Cooldown Resume Bug',
+  VERSION: '8.1.0',
+  VERSION_NAME: 'V8.1.0 - Improved Rate Limiting & Bug Fixes',
   RELEASE_DATE: '2026-01-09',
 
   // ============================================================================
