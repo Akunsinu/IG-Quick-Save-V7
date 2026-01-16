@@ -2160,6 +2160,7 @@ async function processNextBatchUrl() {
   if (requestBudget.shouldPauseProactively()) {
     const waitTime = CONFIG.REQUEST_BUDGET?.PROACTIVE_PAUSE_MS || 30000;
     const budgetStatus = requestBudget.getStatus();
+    const pauseEndTime = Date.now() + waitTime;
     console.log(`[Background] ⚠️ Proactive pause: ${budgetStatus.current}/${budgetStatus.max} requests in last minute. Pausing ${waitTime/1000}s to avoid 429...`);
 
     batchState.isPaused = true;
@@ -2177,6 +2178,7 @@ async function processNextBatchUrl() {
           isPaused: true,
           pauseReason: `Proactive pause (${budgetStatus.current}/${budgetStatus.max} requests) - avoiding rate limit`,
           pauseDuration: waitTime,
+          pauseEndTime: pauseEndTime,
           isProactivePause: true,
           requestBudget: budgetStatus
         }
@@ -2185,6 +2187,7 @@ async function processNextBatchUrl() {
 
     setTimeout(() => {
       batchState.isPaused = false;
+      console.log(`[Background] ⚠️ Proactive pause complete, resuming...`);
       processNextBatchUrl();
     }, waitTime);
     return;
@@ -2594,6 +2597,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (batchState.successCount > 0 && batchState.successCount % postsBeforeCooldown === 0) {
           console.log(`[Background] ☕ Cooldown: Taking a ${cooldownDuration/1000}s break after ${batchState.successCount} posts...`);
 
+          batchState.isPaused = true;
+          const pauseEndTime = Date.now() + cooldownDuration;
+
           if (batchState.port) {
             batchState.port.postMessage({
               type: 'batchProgress',
@@ -2606,12 +2612,19 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                 failedUrls: batchState.failedUrls,
                 isPaused: true,
                 pauseReason: `Cooldown break (${cooldownDuration/1000}s) after ${batchState.successCount} posts`,
-                pauseDuration: cooldownDuration
+                pauseDuration: cooldownDuration,
+                pauseEndTime: pauseEndTime
               }
             });
           }
 
-          baseDelay = cooldownDuration;
+          // Use dedicated setTimeout like proactive pause
+          setTimeout(() => {
+            batchState.isPaused = false;
+            console.log(`[Background] ☕ Cooldown complete, resuming...`);
+            processNextBatchUrl();
+          }, cooldownDuration);
+          return; // Don't continue to normal flow
         }
       }
 

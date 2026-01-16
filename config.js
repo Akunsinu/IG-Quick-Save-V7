@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.0.9',
-  VERSION_NAME: 'V8.0.9 - Add Translation Feature to Archive Viewer',
-  RELEASE_DATE: '2026-01-08',
+  VERSION: '8.0.10',
+  VERSION_NAME: 'V8.0.10 - Fix Cooldown Resume Bug',
+  RELEASE_DATE: '2026-01-09',
 
   // ============================================================================
   // TIMING & DELAYS
@@ -119,7 +119,7 @@ const CONFIG = {
     WINDOW_MS: 60000,                         // 1 minute sliding window
     MAX_REQUESTS: 20,                         // Max 20 batch posts per minute (actual API calls limited by RATE_LIMITS)
     PAUSE_THRESHOLD: 15,                      // Start warning at 15 requests
-    PROACTIVE_PAUSE_MS: 45000,                // Pause for 45 seconds when threshold reached
+    PROACTIVE_PAUSE_MS: 65000,                // Pause for 65 seconds (longer than WINDOW_MS to ensure budget clears)
   },
 
   // ============================================================================

@@ -503,6 +503,12 @@
       totalChunks: totalChunks,
       isPaused: isPausedForChunk
     }, '*');
+
+    // Check if we've reached target (for API interception path)
+    if (isCollecting && targetPostCount > 0 && collectedPosts.length >= targetPostCount) {
+      console.log('[IG Profile Scraper] ✅ Reached target post count via API interception');
+      finishCollection();
+    }
   }
 
   // Fetch Interception - capture fetch API responses
