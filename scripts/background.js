@@ -3,16 +3,48 @@
 importScripts('../config.js');
 importScripts('./sheets-sync.js');
 
-// Alarm name for cooldown resume
+// Alarm names for batch processing
 const BATCH_COOLDOWN_ALARM = 'batchCooldownResume';
+const BATCH_429_RETRY_ALARM = 'batch429Retry';
 
-// Listen for alarms to resume batch processing after cooldown
-chrome.alarms.onAlarm.addListener((alarm) => {
+// Listen for alarms to resume batch processing after cooldown or 429 pause
+chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === BATCH_COOLDOWN_ALARM) {
     console.log('[Background] ⏰ Cooldown alarm fired, resuming batch...');
+    // Restore state if service worker was sleeping
+    await restoreBatchStateIfNeeded();
+    batchState.isPaused = false;
+    processNextBatchUrl();
+  } else if (alarm.name === BATCH_429_RETRY_ALARM) {
+    console.log('[Background] ⏰ 429 retry alarm fired, resuming batch...');
+    // Restore state if service worker was sleeping
+    await restoreBatchStateIfNeeded();
+    batchState.isPaused = false;
     processNextBatchUrl();
   }
 });
+
+// Restore batch state from storage if service worker woke up fresh
+async function restoreBatchStateIfNeeded() {
+  // If batchState has no queue, we may have woken up from sleep
+  if (batchState.queue.length === 0) {
+    const savedState = await loadSavedBatchState();
+    if (savedState) {
+      console.log('[Background] 🔄 Restoring batch state from storage...');
+      batchState.queue = savedState.queue || [];
+      batchState.currentIndex = savedState.currentIndex || 0;
+      batchState.successCount = savedState.successCount || 0;
+      batchState.skippedCount = savedState.skippedCount || 0;
+      batchState.failedUrls = savedState.failedUrls || [];
+      batchState.skipDownloaded = savedState.skipDownloaded !== undefined ? savedState.skipDownloaded : true;
+      batchState.profileUsername = savedState.profileUsername || null;
+      batchState.consecutiveErrors = savedState.consecutiveErrors || 0;
+      batchState.currentPauseDuration = savedState.currentPauseDuration || 0;
+      batchState.isProcessing = true;
+      console.log('[Background] ✅ State restored:', batchState.currentIndex, '/', batchState.queue.length);
+    }
+  }
+}
 
 // Safe message sender - handles disconnected ports gracefully
 function safeSendToPort(port, message) {
@@ -59,6 +91,7 @@ function broadcastToUI(message) {
 // Batch processing state
 let batchState = {
   isProcessing: false,
+  isCurrentlyProcessingUrl: false, // Lock to prevent concurrent processNextBatchUrl calls
   queue: [],
   currentIndex: 0,
   successCount: 0,
@@ -93,6 +126,9 @@ async function saveBatchState() {
     failedUrls: batchState.failedUrls,
     skipDownloaded: batchState.skipDownloaded,
     profileUsername: batchState.profileUsername, // Preserve profile username for resume
+    // Rate limit state (for surviving service worker sleep)
+    consecutiveErrors: batchState.consecutiveErrors,
+    currentPauseDuration: batchState.currentPauseDuration,
     savedAt: Date.now(),
     totalInBatch: batchState.queue.length
   };
@@ -2049,20 +2085,26 @@ chrome.runtime.onConnect.addListener((port) => {
 
 // Batch processing functions
 async function processNextBatchUrl() {
+  // Prevent concurrent calls (race condition protection)
+  if (batchState.isCurrentlyProcessingUrl) {
+    console.log('[Background] ⚠️ processNextBatchUrl already running, skipping concurrent call');
+    return;
+  }
+
   if (!batchState.isProcessing) {
     console.log('[Background] Batch processing stopped');
     return;
   }
 
+  // Acquire lock
+  batchState.isCurrentlyProcessingUrl = true;
+
   if (batchState.currentIndex >= batchState.queue.length) {
     // Batch complete
     console.log('[Background] Batch processing complete');
-    batchState.isProcessing = false;
 
-    // Clear saved batch state since we completed successfully
-    await clearSavedBatchState();
-
-    safeSendToPort(batchState.port, {
+    // Send completion message before resetting state
+    broadcastToUI({
       type: 'batchComplete',
       data: {
         successCount: batchState.successCount,
@@ -2071,6 +2113,28 @@ async function processNextBatchUrl() {
         total: batchState.queue.length
       }
     });
+
+    // Full state reset
+    batchState.isProcessing = false;
+    batchState.isCurrentlyProcessingUrl = false;
+    batchState.queue = [];
+    batchState.currentIndex = 0;
+    batchState.successCount = 0;
+    batchState.skippedCount = 0;
+    batchState.failedUrls = [];
+    batchState.consecutiveErrors = 0;
+    batchState.last429Time = null;
+    batchState.currentPauseDuration = 0;
+    batchState.isPaused = false;
+    batchState.profileUsername = null;
+
+    // Clear saved batch state since we completed successfully
+    await clearSavedBatchState();
+
+    // Clear any pending alarms
+    chrome.alarms.clear(BATCH_COOLDOWN_ALARM);
+    chrome.alarms.clear(BATCH_429_RETRY_ALARM);
+
     return;
   }
 
@@ -2091,7 +2155,7 @@ async function processNextBatchUrl() {
       batchState.currentIndex++;
 
       // Send progress update with source info
-      safeSendToPort(batchState.port, {
+      broadcastToUI({
         type: 'batchProgress',
         data: {
           current: batchState.currentIndex,
@@ -2106,13 +2170,14 @@ async function processNextBatchUrl() {
       });
 
       // Small delay before processing next
+      batchState.isCurrentlyProcessingUrl = false; // Release lock before next call
       setTimeout(() => processNextBatchUrl(), 100);
       return;
     }
   }
 
   // Send progress update to popup
-  safeSendToPort(batchState.port, {
+  broadcastToUI({
     type: 'batchProgress',
     data: {
       current: batchState.currentIndex + 1,
@@ -2129,12 +2194,15 @@ async function processNextBatchUrl() {
     // Navigate to the URL
     await chrome.tabs.update(batchState.tabId, { url: url });
     // Wait for page load and extraction - handled by tab update listener
+    // Release lock after successful navigation (tab listener will handle next steps)
+    batchState.isCurrentlyProcessingUrl = false;
   } catch (error) {
     console.error('[Background] Failed to navigate to URL:', url, error);
     batchState.failedUrls.push({ url, error: error.message });
     batchState.currentIndex++;
 
     // Add delay before next URL using CONFIG
+    batchState.isCurrentlyProcessingUrl = false; // Release lock before next call
     const delay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
     setTimeout(() => processNextBatchUrl(), delay);
   }
@@ -2366,7 +2434,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (batchState.consecutiveErrors >= maxRetries) {
           // Too many 429 errors, stop batch processing
           console.error('[Background] 🛑 Too many 429 errors, stopping batch processing');
-          batchState.isProcessing = false;
           batchState.failedUrls.push({
             url: tab.url,
             error: 'Rate limited - batch stopped after multiple 429 errors',
@@ -2374,7 +2441,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             timestamp: Date.now()
           });
 
-          safeSendToPort(batchState.port, {
+          broadcastToUI({
             type: 'batchComplete',
             data: {
               successCount: batchState.successCount,
@@ -2384,6 +2451,19 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
               stoppedDueToRateLimit: true
             }
           });
+
+          // Save state before stopping (user can resume later)
+          await saveBatchState();
+
+          // Reset processing state but keep queue for potential resume
+          batchState.isProcessing = false;
+          batchState.isPaused = false;
+          batchState.isCurrentlyProcessingUrl = false;
+
+          // Clear any pending alarms
+          chrome.alarms.clear(BATCH_COOLDOWN_ALARM);
+          chrome.alarms.clear(BATCH_429_RETRY_ALARM);
+
           return;
         }
 
@@ -2391,7 +2471,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         console.warn(`[Background] 🚫 Rate limited! Pausing for ${batchState.currentPauseDuration / 1000} seconds before retry...`);
         batchState.isPaused = true;
 
-        safeSendToPort(batchState.port, {
+        const pauseEndTime = Date.now() + batchState.currentPauseDuration;
+
+        broadcastToUI({
           type: 'batchProgress',
           data: {
             current: batchState.currentIndex + 1,
@@ -2402,15 +2484,18 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
             failedUrls: batchState.failedUrls,
             isPaused: true,
             pauseReason: `Rate limited - pausing ${Math.round(batchState.currentPauseDuration / 1000)}s`,
-            pauseDuration: batchState.currentPauseDuration
+            pauseDuration: batchState.currentPauseDuration,
+            pauseEndTime: pauseEndTime
           }
         });
 
         // Don't increment currentIndex - we'll retry this URL
-        setTimeout(() => {
-          batchState.isPaused = false;
-          processNextBatchUrl();
-        }, batchState.currentPauseDuration);
+        // Save state before long wait (survives service worker sleep)
+        await saveBatchState();
+
+        // Use chrome.alarms for long delays (survives service worker sleep)
+        chrome.alarms.create(BATCH_429_RETRY_ALARM, { when: pauseEndTime });
+        console.log(`[Background] ⏰ 429 retry alarm set for ${new Date(pauseEndTime).toLocaleTimeString()}`);
         return;
       } else {
         // Non-429 error - include more context for debugging
@@ -2458,7 +2543,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
           const pauseEndTime = Date.now() + cooldownDuration;
 
-          safeSendToPort(batchState.port, {
+          batchState.isPaused = true;
+
+          broadcastToUI({
             type: 'batchProgress',
             data: {
               current: batchState.currentIndex,
@@ -2473,6 +2560,9 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
               pauseEndTime: pauseEndTime
             }
           });
+
+          // Save state before long wait (survives service worker sleep)
+          await saveBatchState();
 
           // Use chrome.alarms for long delays (survives service worker sleep)
           chrome.alarms.create(BATCH_COOLDOWN_ALARM, { when: pauseEndTime });

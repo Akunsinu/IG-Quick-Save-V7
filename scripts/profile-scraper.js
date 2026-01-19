@@ -36,6 +36,7 @@
   let lastChunkBoundary = 0;      // Posts count at last chunk boundary
   let isPausedForChunk = false;   // Currently paused between chunks
   let chunkPauseTimeout = null;   // Timeout for auto-resume
+  let scrollLoopTimeout = null;   // Timeout for scroll loop (prevents stacking)
   let manualPauseRequested = false; // User requested manual pause
 
   // Get username from page
@@ -215,10 +216,17 @@
     console.log('[IG Profile Scraper] ▶️ Resuming after chunk pause...');
     isPausedForChunk = false;
     manualPauseRequested = false;
+    noNewPostsCount = 0; // Reset counter so we don't immediately finish
 
     if (chunkPauseTimeout) {
       clearTimeout(chunkPauseTimeout);
       chunkPauseTimeout = null;
+    }
+
+    // Clear scroll timeout too in case one is pending
+    if (scrollLoopTimeout) {
+      clearTimeout(scrollLoopTimeout);
+      scrollLoopTimeout = null;
     }
 
     // Notify popup
@@ -336,7 +344,12 @@
     }
 
     // Wait and then try again (using config delay)
-    setTimeout(() => {
+    // Clear any existing scroll timeout to prevent stacking
+    if (scrollLoopTimeout) {
+      clearTimeout(scrollLoopTimeout);
+    }
+    scrollLoopTimeout = setTimeout(() => {
+      scrollLoopTimeout = null;
       if (isCollecting && !stopRequested && !isPausedForChunk) {
         scrollToLoadMore();
       }
@@ -411,6 +424,21 @@
 
     isCollecting = false;
     stopRequested = false;
+
+    // Clear all pending timeouts to prevent stacking
+    if (scrollLoopTimeout) {
+      clearTimeout(scrollLoopTimeout);
+      scrollLoopTimeout = null;
+    }
+    if (chunkPauseTimeout) {
+      clearTimeout(chunkPauseTimeout);
+      chunkPauseTimeout = null;
+    }
+
+    // Reset chunk state
+    isPausedForChunk = false;
+    manualPauseRequested = false;
+    lastChunkBoundary = 0;
 
     console.log('[IG Profile Scraper] ✅ Collection finished with', collectedPosts.length, 'posts');
 
