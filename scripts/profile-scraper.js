@@ -247,9 +247,14 @@
     console.log('[IG Profile Scraper] 🛑 Manual pause requested');
     manualPauseRequested = true;
 
+    // Clear all pending timeouts to ensure clean pause
     if (chunkPauseTimeout) {
       clearTimeout(chunkPauseTimeout);
       chunkPauseTimeout = null;
+    }
+    if (scrollLoopTimeout) {
+      clearTimeout(scrollLoopTimeout);
+      scrollLoopTimeout = null;
     }
 
     // If not already paused, pause now

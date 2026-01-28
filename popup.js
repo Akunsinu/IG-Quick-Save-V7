@@ -7,6 +7,21 @@ let extractedData = {
   comments: null
 };
 
+// Helper: Safe message send to content script with lastError handling
+function safeTabSendMessage(tabId, message, callback) {
+  try {
+    chrome.tabs.sendMessage(tabId, message, (response) => {
+      if (chrome.runtime.lastError) {
+        console.warn('[Popup] Message send failed:', chrome.runtime.lastError.message);
+        // Don't throw, just log - some operations can continue without response
+      }
+      if (callback) callback(response);
+    });
+  } catch (error) {
+    console.error('[Popup] Tab sendMessage error:', error);
+  }
+}
+
 // Password protection (using CONFIG)
 const passwordScreen = document.getElementById('passwordScreen');
 const mainContent = document.getElementById('mainContent');
@@ -151,92 +166,117 @@ passwordInput.addEventListener('input', () => {
 // Check authentication on popup load
 checkAuthentication();
 
-// Initialize
-async function init() {
-  // Connect to background script
+// Message handler function (extracted so it can be reused on reconnection)
+function handlePortMessage(msg) {
+  if (msg.type === 'success') {
+    showStatus('success', msg.message);
+  } else if (msg.type === 'error') {
+    showStatus('error', msg.message);
+  } else if (msg.type === 'currentData') {
+    handleExtractedData(msg.data);
+  } else if (msg.type === 'progress') {
+    // Real-time progress updates
+    showStatus('info', msg.message);
+  } else if (msg.type === 'batchProgress') {
+    updateBatchProgress(msg.data);
+  } else if (msg.type === 'batchComplete') {
+    handleBatchComplete(msg.data);
+  } else if (msg.type === 'batchStopped') {
+    handleBatchStopped(msg.data);
+  } else if (msg.type === 'profileScrapeProgress') {
+    console.log('[Popup] Received profileScrapeProgress:', msg.data);
+    handleProfileScrapeProgress(msg.data);
+  } else if (msg.type === 'profileScrapeComplete') {
+    console.log('[Popup] Received profileScrapeComplete:', msg.data);
+    handleProfileScrapeComplete(msg.data);
+  } else if (msg.type === 'profileChunkPause') {
+    console.log('[Popup] Received profileChunkPause:', msg.data);
+    handleProfileChunkPause(msg.data);
+  } else if (msg.type === 'profileResumed') {
+    console.log('[Popup] Received profileResumed:', msg.data);
+    handleProfileResumed(msg.data);
+  } else if (msg.type === 'profileRateLimited') {
+    console.log('[Popup] Received profileRateLimited:', msg.data);
+    handleProfileRateLimited(msg.data);
+  } else if (msg.type === 'savedProfileScrapeState') {
+    console.log('[Popup] Received savedProfileScrapeState:', msg.data);
+    handleSavedProfileScrapeState(msg.data);
+  } else if (msg.type === 'profileScrapingStateSaved') {
+    console.log('[Popup] Profile scraping state saved');
+  } else if (msg.type === 'profileScrapingStateCleared') {
+    console.log('[Popup] Profile scraping state cleared');
+  } else if (msg.type === 'downloadStats') {
+    // Update download history count when it changes
+    if (typeof msg.data.count === 'number') {
+      downloadHistoryCount.textContent = msg.data.count;
+    }
+  } else if (msg.type === 'savedBatchState') {
+    // Handle saved batch state for resume functionality
+    handleSavedBatchState(msg.data);
+  } else if (msg.type === 'batchResumed') {
+    // Handle batch resumed confirmation
+    handleBatchResumed(msg.data);
+  } else if (msg.type === 'urlsFilteredByTeam') {
+    // Handle filtered URLs for profile download
+    handleUrlsFilteredByTeam(msg.data);
+  } else if (msg.type === 'downloadSourceStats') {
+    // Handle download source stats update
+    handleDownloadSourceStats(msg.data);
+  } else if (msg.type === 'folderScanUpdated') {
+    // Folder scan completed
+    console.log('[Popup] Folder scan updated:', msg.data);
+  } else if (msg.type === 'folderScanStats') {
+    // Folder scan stats loaded
+    handleFolderScanStats(msg.data);
+  } else if (msg.type === 'profileScreenshotCaptured') {
+    // Profile screenshot captured
+    if (msg.data.success) {
+      console.log('[Popup] Profile screenshot saved:', msg.data.filename);
+      showStatus('success', '📸 Profile screenshot saved!');
+    } else {
+      console.error('[Popup] Profile screenshot failed:', msg.data.error);
+      showStatus('warning', '📸 Screenshot failed: ' + msg.data.error);
+    }
+  }
+
+  // Handle sync-related messages (defined at bottom of file)
+  if (typeof handleSyncMessages === 'function') {
+    handleSyncMessages(msg);
+  }
+}
+
+// Setup port connection with all listeners
+function setupPort() {
   port = chrome.runtime.connect({ name: 'popup' });
-
-  port.onMessage.addListener((msg) => {
-    if (msg.type === 'success') {
-      showStatus('success', msg.message);
-    } else if (msg.type === 'error') {
-      showStatus('error', msg.message);
-    } else if (msg.type === 'currentData') {
-      handleExtractedData(msg.data);
-    } else if (msg.type === 'progress') {
-      // Real-time progress updates
-      showStatus('info', msg.message);
-    } else if (msg.type === 'batchProgress') {
-      updateBatchProgress(msg.data);
-    } else if (msg.type === 'batchComplete') {
-      handleBatchComplete(msg.data);
-    } else if (msg.type === 'batchStopped') {
-      handleBatchStopped(msg.data);
-    } else if (msg.type === 'profileScrapeProgress') {
-      console.log('[Popup] Received profileScrapeProgress:', msg.data);
-      handleProfileScrapeProgress(msg.data);
-    } else if (msg.type === 'profileScrapeComplete') {
-      console.log('[Popup] Received profileScrapeComplete:', msg.data);
-      handleProfileScrapeComplete(msg.data);
-    } else if (msg.type === 'profileChunkPause') {
-      console.log('[Popup] Received profileChunkPause:', msg.data);
-      handleProfileChunkPause(msg.data);
-    } else if (msg.type === 'profileResumed') {
-      console.log('[Popup] Received profileResumed:', msg.data);
-      handleProfileResumed(msg.data);
-    } else if (msg.type === 'profileRateLimited') {
-      console.log('[Popup] Received profileRateLimited:', msg.data);
-      handleProfileRateLimited(msg.data);
-    } else if (msg.type === 'savedProfileScrapeState') {
-      console.log('[Popup] Received savedProfileScrapeState:', msg.data);
-      handleSavedProfileScrapeState(msg.data);
-    } else if (msg.type === 'profileScrapingStateSaved') {
-      console.log('[Popup] Profile scraping state saved');
-    } else if (msg.type === 'profileScrapingStateCleared') {
-      console.log('[Popup] Profile scraping state cleared');
-    } else if (msg.type === 'downloadStats') {
-      // Update download history count when it changes
-      if (typeof msg.data.count === 'number') {
-        downloadHistoryCount.textContent = msg.data.count;
-      }
-    } else if (msg.type === 'savedBatchState') {
-      // Handle saved batch state for resume functionality
-      handleSavedBatchState(msg.data);
-    } else if (msg.type === 'batchResumed') {
-      // Handle batch resumed confirmation
-      handleBatchResumed(msg.data);
-    } else if (msg.type === 'urlsFilteredByTeam') {
-      // Handle filtered URLs for profile download
-      handleUrlsFilteredByTeam(msg.data);
-    } else if (msg.type === 'downloadSourceStats') {
-      // Handle download source stats update
-      handleDownloadSourceStats(msg.data);
-    } else if (msg.type === 'folderScanUpdated') {
-      // Folder scan completed
-      console.log('[Popup] Folder scan updated:', msg.data);
-    } else if (msg.type === 'folderScanStats') {
-      // Folder scan stats loaded
-      handleFolderScanStats(msg.data);
-    } else if (msg.type === 'profileScreenshotCaptured') {
-      // Profile screenshot captured
-      if (msg.data.success) {
-        console.log('[Popup] Profile screenshot saved:', msg.data.filename);
-        showStatus('success', '📸 Profile screenshot saved!');
-      } else {
-        console.error('[Popup] Profile screenshot failed:', msg.data.error);
-        showStatus('warning', '📸 Screenshot failed: ' + msg.data.error);
-      }
-    }
-
-    // Handle sync-related messages (defined at bottom of file)
-    if (typeof handleSyncMessages === 'function') {
-      handleSyncMessages(msg);
-    }
-  });
+  port.onMessage.addListener(handlePortMessage);
 
   port.onDisconnect.addListener(() => {
     console.log('[Popup] Port disconnected!');
+    port = null; // Clear reference to prevent silent failures
+
+    // Show disconnection warning to user
+    showStatus('warning', '⚠️ Connection lost. Reconnecting...');
+
+    // Attempt to reconnect after a short delay
+    setTimeout(() => {
+      try {
+        setupPort(); // Re-setup port with all listeners
+        console.log('[Popup] Reconnected successfully');
+        showStatus('info', '✅ Reconnected');
+        // Request current batch state in case we're mid-batch
+        if (port) port.postMessage({ action: 'getBatchState' });
+      } catch (error) {
+        console.error('[Popup] Reconnection failed:', error);
+        showStatus('error', '❌ Connection failed. Please close and reopen the extension.');
+      }
+    }, 500);
   });
+}
+
+// Initialize
+async function init() {
+  // Connect to background script with full listener setup
+  setupPort();
 
   // Check if we're on a post or reel page
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -457,19 +497,22 @@ extractBtn.addEventListener('click', async () => {
       showStatus('info', '⏳ Waiting for page to load and auto-extracting...');
 
       // Listen for tab update to complete
+      let listenerCleanedUp = false;
       const listener = (tabId, changeInfo, updatedTab) => {
         if (tabId === tab.id && changeInfo.status === 'complete') {
+          if (listenerCleanedUp) return; // Prevent double execution
+          listenerCleanedUp = true;
           chrome.tabs.onUpdated.removeListener(listener);
 
           // Wait a bit more for Instagram to render, then extract
           setTimeout(async () => {
             showStatus('info', '⏳ Extracting data...');
-            chrome.tabs.sendMessage(tab.id, { action: 'extractMedia' });
-            chrome.tabs.sendMessage(tab.id, { action: 'extractComments' });
+            safeTabSendMessage(tab.id, { action: 'extractMedia' });
+            safeTabSendMessage(tab.id, { action: 'extractComments' });
 
             // Wait for data to be collected
             setTimeout(() => {
-              port.postMessage({ action: 'getCurrentData' });
+              if (port) port.postMessage({ action: 'getCurrentData' });
               setButtonLoading(extractBtn, false);
             }, 3000);
           }, 2000);
@@ -477,16 +520,28 @@ extractBtn.addEventListener('click', async () => {
       };
 
       chrome.tabs.onUpdated.addListener(listener);
+
+      // Fallback: cleanup listener after 30 seconds if tab never completes
+      setTimeout(() => {
+        if (!listenerCleanedUp) {
+          listenerCleanedUp = true;
+          chrome.tabs.onUpdated.removeListener(listener);
+          console.warn('[Popup] Tab listener cleanup timeout - tab did not complete in 30s');
+          showStatus('warning', '⚠️ Page load timed out. Please try again.');
+          setButtonLoading(extractBtn, false);
+        }
+      }, 30000);
+
       return;
     }
 
     // Request data extraction from content script
-    chrome.tabs.sendMessage(tab.id, { action: 'extractMedia' });
-    chrome.tabs.sendMessage(tab.id, { action: 'extractComments' });
+    safeTabSendMessage(tab.id, { action: 'extractMedia' });
+    safeTabSendMessage(tab.id, { action: 'extractComments' });
 
     // Wait for data to be collected (script tag parsing is fast)
     setTimeout(() => {
-      port.postMessage({ action: 'getCurrentData' });
+      if (port) port.postMessage({ action: 'getCurrentData' });
       setButtonLoading(extractBtn, false);
     }, 3000);
 

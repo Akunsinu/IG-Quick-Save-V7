@@ -1,6 +1,6 @@
 // Google Sheets Sync Module for IG Quick Save
 // Handles all communication with Google Sheets via Apps Script Web App
-// Version: 1.0.0
+// Version: 1.1.0
 
 const SheetsSync = {
   // Configuration (loaded from storage)
@@ -18,6 +18,21 @@ const SheetsSync = {
     profiles: new Map(),    // username -> profile stats
     names: new Map(),       // username (lowercase) -> real name
     lastFetched: null,      // Timestamp of last cache refresh
+  },
+
+  // ===== HELPER: Bounded cache addition =====
+  _addToDownloadsCache(shortcode, record) {
+    const maxSize = (typeof CONFIG !== 'undefined' && CONFIG?.PERFORMANCE?.MAX_SHEETS_CACHE_SIZE) || 50000;
+
+    // If at limit and this is a new entry, remove oldest entries (LRU-style via iterator)
+    if (this.cache.downloads.size >= maxSize && !this.cache.downloads.has(shortcode)) {
+      // Remove first (oldest) entry
+      const firstKey = this.cache.downloads.keys().next().value;
+      this.cache.downloads.delete(firstKey);
+      console.log('[SheetsSync] ⚠️ Cache at limit, evicted oldest entry');
+    }
+
+    this.cache.downloads.set(shortcode, record);
   },
 
   // ===== INITIALIZATION =====
@@ -122,10 +137,21 @@ const SheetsSync = {
         throw new Error(downloadsData.error);
       }
 
-      // Update local cache
+      // Update local cache with size limit
       this.cache.downloads.clear();
       const downloads = downloadsData.downloads || [];
-      downloads.forEach(record => {
+      const maxCacheSize = (typeof CONFIG !== 'undefined' && CONFIG?.PERFORMANCE?.MAX_SHEETS_CACHE_SIZE) || 50000;
+
+      // If too many downloads, keep only the most recent ones (assuming they come sorted by date)
+      const downloadsToCache = downloads.length > maxCacheSize
+        ? downloads.slice(-maxCacheSize)
+        : downloads;
+
+      if (downloads.length > maxCacheSize) {
+        console.warn(`[SheetsSync] ⚠️ Trimming cache from ${downloads.length} to ${maxCacheSize} entries`);
+      }
+
+      downloadsToCache.forEach(record => {
         this.cache.downloads.set(record.shortcode, record);
       });
 
@@ -385,8 +411,8 @@ const SheetsSync = {
       const result = await response.json();
 
       if (result.success && result.added) {
-        // Update local cache immediately
-        this.cache.downloads.set(record.shortcode, {
+        // Update local cache immediately (with bounds check)
+        this._addToDownloadsCache(record.shortcode, {
           ...record,
           timestamp: new Date().toISOString()
         });
@@ -442,10 +468,10 @@ const SheetsSync = {
       const result = await response.json();
 
       if (result.success) {
-        // Update local cache
+        // Update local cache (with bounds check)
         records.forEach(record => {
           if (!this.cache.downloads.has(record.shortcode)) {
-            this.cache.downloads.set(record.shortcode, {
+            this._addToDownloadsCache(record.shortcode, {
               ...record,
               timestamp: new Date().toISOString()
             });

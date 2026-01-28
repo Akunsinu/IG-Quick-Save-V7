@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.1.3',
-  VERSION_NAME: 'V8.1.3 - Service Worker Sleep + Race Condition Fixes',
-  RELEASE_DATE: '2026-01-19',
+  VERSION: '8.2.3',
+  VERSION_NAME: 'V8.2.3 - Batch Stability + Debug Logging',
+  RELEASE_DATE: '2026-01-28',
 
   // ============================================================================
   // TIMING & DELAYS
@@ -24,7 +24,7 @@ const CONFIG = {
     EXTRACTION_WAIT_TIMEOUT: 3000,            // How long popup waits for extraction (ms)
     POLL_INTERVAL_START: 500,                 // Initial polling interval (ms)
     POLL_INTERVAL_MAX: 2000,                  // Maximum polling interval (ms)
-    POLL_MAX_WAIT: 60000,                     // Max time to wait for data (ms)
+    POLL_MAX_WAIT: 15000,                     // Max time to wait for data (ms) - reduced from 60s to prevent long hangs
     POLL_BACKOFF_MULTIPLIER: 1.5,             // Exponential backoff multiplier
 
     // Button UI feedback
@@ -215,6 +215,13 @@ const CONFIG = {
     // Image processing
     IMAGE_CROP_QUALITY: 0.92,                 // JPEG quality for cropped images
     CANVAS_MAX_SIZE: 4096,                    // Maximum canvas dimension (px)
+
+    // Data structure limits to prevent memory bloat
+    MAX_FAILED_URLS: 500,                     // Maximum failed URLs to track
+    MAX_COLLECTED_POSTS: 5000,                // Maximum posts in profile scraper
+    MAX_AVATAR_URLS: 500,                     // Maximum avatar URLs to collect
+    MAX_SHEETS_CACHE_SIZE: 50000,             // Maximum entries in Sheets sync cache
+    AVATAR_RECURSION_DEPTH: 20,               // Maximum recursion depth for avatar collection
   },
 
   // ============================================================================

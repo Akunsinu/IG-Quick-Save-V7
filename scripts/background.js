@@ -2,6 +2,26 @@
 // Import config and modules (service workers use importScripts)
 importScripts('../config.js');
 importScripts('./sheets-sync.js');
+importScripts('./logger.js');
+
+// Keepalive: Ping storage periodically to prevent service worker termination
+let keepaliveInterval = setInterval(() => {
+  chrome.storage.session.get('_keepalive').catch(() => {});
+}, 25000);
+
+// Utility: Wrap a promise with a timeout to prevent indefinite hangs
+function promiseWithTimeout(promise, timeoutMs, errorMessage = 'Operation timed out') {
+  let timeoutId;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${errorMessage} after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    clearTimeout(timeoutId);
+  });
+}
 
 // Alarm names for batch processing
 const BATCH_COOLDOWN_ALARM = 'batchCooldownResume';
@@ -14,13 +34,24 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     // Restore state if service worker was sleeping
     await restoreBatchStateIfNeeded();
     batchState.isPaused = false;
+    // CRITICAL FIX: Reset the lock so processNextBatchUrl can proceed
+    batchState.isCurrentlyProcessingUrl = false;
     processNextBatchUrl();
   } else if (alarm.name === BATCH_429_RETRY_ALARM) {
     console.log('[Background] ⏰ 429 retry alarm fired, resuming batch...');
     // Restore state if service worker was sleeping
     await restoreBatchStateIfNeeded();
     batchState.isPaused = false;
+    // CRITICAL FIX: Reset the lock so processNextBatchUrl can proceed
+    batchState.isCurrentlyProcessingUrl = false;
     processNextBatchUrl();
+  } else if (alarm.name === 'batchNextUrl') {
+    // Process next URL in batch after delay
+    if (typeof Logger !== 'undefined') Logger.debug('Alarm', 'batchNextUrl alarm fired');
+    if (batchState.isProcessing && !batchState.isPaused) {
+      batchState.isCurrentlyProcessingUrl = false;
+      processNextBatchUrl();
+    }
   }
 });
 
@@ -107,6 +138,19 @@ let batchState = {
   currentPauseDuration: 0,
   isPaused: false
 };
+
+// Helper: Safely add to failedUrls with size limit to prevent memory bloat
+function addFailedUrl(failedUrlEntry) {
+  const maxSize = CONFIG?.PERFORMANCE?.MAX_FAILED_URLS || 500;
+
+  // If at limit, remove oldest entries (FIFO)
+  while (batchState.failedUrls.length >= maxSize) {
+    batchState.failedUrls.shift();
+    console.log('[Background] ⚠️ failedUrls at limit, removed oldest entry');
+  }
+
+  batchState.failedUrls.push(failedUrlEntry);
+}
 
 // ===== Batch State Persistence (for resume capability) =====
 
@@ -556,19 +600,24 @@ async function cropScreenshot(dataUrl, cropLeftPercent = 15, cropBottomPercent =
 }
 
 // Capture screenshot with iPhone mobile emulation using Chrome Debugger API
+// Wrapped with 30-second timeout to prevent indefinite hangs
 async function captureMobileScreenshot(tab) {
-  // iPhone 14 Pro dimensions
-  const IPHONE_WIDTH = 393;
-  const IPHONE_HEIGHT = 852;
-  const DEVICE_SCALE_FACTOR = 3;
-  const MOBILE_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+  const SCREENSHOT_TIMEOUT = 30000; // 30 seconds max for the entire operation
 
-  const debuggeeId = { tabId: tab.id };
+  // Inner function that does the actual work
+  async function captureWithDebugger() {
+    // iPhone 14 Pro dimensions
+    const IPHONE_WIDTH = 393;
+    const IPHONE_HEIGHT = 852;
+    const DEVICE_SCALE_FACTOR = 3;
+    const MOBILE_USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
-  try {
-    // Attach debugger to the tab
-    await chrome.debugger.attach(debuggeeId, '1.3');
-    console.log('[Background] Debugger attached for mobile screenshot');
+    const debuggeeId = { tabId: tab.id };
+
+    try {
+      // Attach debugger to the tab
+      await chrome.debugger.attach(debuggeeId, '1.3');
+      console.log('[Background] Debugger attached for mobile screenshot');
 
     // Enable required domains
     await chrome.debugger.sendCommand(debuggeeId, 'Page.enable', {});
@@ -663,46 +712,85 @@ async function captureMobileScreenshot(tab) {
     // Return as data URL
     return 'data:image/png;base64,' + result.data;
 
-  } catch (error) {
-    console.error('[Background] Mobile screenshot error:', error);
+    } catch (error) {
+      console.error('[Background] Mobile screenshot error:', error);
 
-    // Try to detach debugger on error
+      // Try to detach debugger on error
+      try {
+        await chrome.debugger.detach(debuggeeId);
+      } catch (detachError) {
+        // Ignore detach errors
+      }
+
+      // Fallback to regular screenshot with timeout
+      console.log('[Background] Falling back to regular screenshot');
+      return await promiseWithTimeout(
+        chrome.tabs.captureVisibleTab(tab.windowId, {
+          format: 'png',
+          quality: 100
+        }),
+        10000,
+        'Fallback screenshot timed out'
+      );
+    }
+  }
+
+  // Wrap the inner function with a timeout to prevent indefinite hangs
+  try {
+    return await promiseWithTimeout(
+      captureWithDebugger(),
+      SCREENSHOT_TIMEOUT,
+      'Profile screenshot capture timed out'
+    );
+  } catch (timeoutError) {
+    console.error('[Background] Screenshot timeout:', timeoutError.message);
+    // Try to detach debugger on timeout
     try {
-      await chrome.debugger.detach(debuggeeId);
+      await chrome.debugger.detach({ tabId: tab.id });
     } catch (detachError) {
       // Ignore detach errors
     }
-
-    // Fallback to regular screenshot
-    console.log('[Background] Falling back to regular screenshot');
-    return await chrome.tabs.captureVisibleTab(tab.windowId, {
-      format: 'png',
-      quality: 100
-    });
+    // Fallback to regular screenshot on timeout - also with timeout to prevent indefinite hang
+    console.log('[Background] Falling back to regular screenshot after timeout');
+    return await promiseWithTimeout(
+      chrome.tabs.captureVisibleTab(tab.windowId, {
+        format: 'png',
+        quality: 100
+      }),
+      10000,
+      'Fallback screenshot after timeout also timed out'
+    );
   }
 }
 
 // Render Instagram-style screenshot using offscreen document
+// Includes 20-second timeout to prevent indefinite hangs
 async function renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl) {
+  const RENDER_TIMEOUT = 20000; // 20 seconds
+
   try {
     await setupOffscreenDocument();
 
-    return new Promise((resolve, reject) => {
+    const renderPromise = new Promise((resolve, reject) => {
       chrome.runtime.sendMessage({
         type: 'RENDER_SCREENSHOT',
         postData: postInfo,
         mediaDataUrl: mediaDataUrl,
         avatarDataUrl: avatarDataUrl
       }, (response) => {
-        if (response && response.success) {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else if (response && response.success) {
           resolve(response.dataUrl);
         } else {
           reject(new Error(response?.error || 'Failed to render screenshot'));
         }
       });
     });
+
+    return await promiseWithTimeout(renderPromise, RENDER_TIMEOUT, 'Screenshot render timed out');
   } catch (error) {
-    console.error('[Background] Error rendering screenshot:', error);
+    console.error('[Background] Error rendering screenshot:', error.message);
     throw error;
   }
 }
@@ -973,11 +1061,14 @@ function getFileExtension(url, isVideo = false) {
 }
 
 // Helper function to fetch avatars via content script
+// Includes 20-second timeout to prevent indefinite hangs
 async function fetchAvatarsViaContentScript(urls) {
   if (!urls || urls.length === 0) {
     console.log('[Background] No avatar URLs to fetch');
     return {};
   }
+
+  const AVATAR_FETCH_TIMEOUT = 20000; // 20 seconds
 
   try {
     // Get active tab
@@ -992,7 +1083,7 @@ async function fetchAvatarsViaContentScript(urls) {
     console.log('[Background] URLs to fetch:', urls);
 
     // Send message to content script to fetch avatars
-    return new Promise((resolve, reject) => {
+    const fetchPromise = new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(tab.id, {
         action: 'fetchAvatars',
         urls: urls
@@ -1010,15 +1101,21 @@ async function fetchAvatarsViaContentScript(urls) {
         }
       });
     });
+
+    // Wrap with timeout
+    return await promiseWithTimeout(fetchPromise, AVATAR_FETCH_TIMEOUT, 'Avatar fetch timed out');
   } catch (error) {
-    console.error('[Background] Error in fetchAvatarsViaContentScript:', error);
+    console.error('[Background] Error in fetchAvatarsViaContentScript:', error.message);
     return {};
   }
 }
 
 // Helper function to fetch a single media item as base64 via content script
+// Includes 15-second timeout to prevent indefinite hangs
 async function fetchSingleMediaAsBase64(url, isVideo = false) {
   if (!url) return null;
+
+  const MEDIA_FETCH_TIMEOUT = 15000; // 15 seconds
 
   try {
     // Get active tab
@@ -1028,7 +1125,7 @@ async function fetchSingleMediaAsBase64(url, isVideo = false) {
       return null;
     }
 
-    return new Promise((resolve, reject) => {
+    const fetchPromise = new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(tab.id, {
         action: isVideo ? 'captureVideoFrame' : 'fetchMedia',
         mediaItems: [{ image_url: url }],
@@ -1057,18 +1154,24 @@ async function fetchSingleMediaAsBase64(url, isVideo = false) {
         }
       });
     });
+
+    // Wrap with timeout
+    return await promiseWithTimeout(fetchPromise, MEDIA_FETCH_TIMEOUT, 'Media fetch timed out');
   } catch (error) {
-    console.error('[Background] Error in fetchSingleMediaAsBase64:', error);
+    console.error('[Background] Error in fetchSingleMediaAsBase64:', error.message);
     return null;
   }
 }
 
 // Helper function to fetch media via content script
+// Includes 30-second timeout to prevent indefinite hangs
 async function fetchMediaViaContentScript(mediaItems) {
   if (!mediaItems || mediaItems.length === 0) {
     console.log('[Background] No media items to fetch');
     return {};
   }
+
+  const MEDIA_FETCH_TIMEOUT = 30000; // 30 seconds for multiple items
 
   try {
     // Get active tab
@@ -1082,7 +1185,7 @@ async function fetchMediaViaContentScript(mediaItems) {
     console.log('[Background] Requesting', mediaItems.length, 'media items from content script...');
 
     // Send message to content script to fetch media
-    return new Promise((resolve, reject) => {
+    const fetchPromise = new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(tab.id, {
         action: 'fetchMedia',
         mediaItems: mediaItems
@@ -1099,8 +1202,11 @@ async function fetchMediaViaContentScript(mediaItems) {
         }
       });
     });
+
+    // Wrap with timeout
+    return await promiseWithTimeout(fetchPromise, MEDIA_FETCH_TIMEOUT, 'Media fetch timed out');
   } catch (error) {
-    console.error('[Background] Error in fetchMediaViaContentScript:', error);
+    console.error('[Background] Error in fetchMediaViaContentScript:', error.message);
     return {};
   }
 }
@@ -1353,6 +1459,40 @@ chrome.runtime.onConnect.addListener((port) => {
             type: 'currentData',
             data: currentData
           });
+        } else if (msg.action === 'getBatchState') {
+          // Send current batch state to UI (for reconnection scenarios)
+          if (batchState.isProcessing) {
+            port.postMessage({
+              type: 'batchProgress',
+              data: {
+                current: batchState.currentIndex + 1,
+                total: batchState.queue.length,
+                url: batchState.queue[batchState.currentIndex] || '',
+                successCount: batchState.successCount,
+                skippedCount: batchState.skippedCount,
+                failedUrls: batchState.failedUrls,
+                isPaused: batchState.isPaused,
+                reconnected: true // Flag to indicate this is a reconnection update
+              }
+            });
+            console.log('[Background] Sent batch state to reconnected UI');
+          }
+        } else if (msg.action === 'exportLogs') {
+          // Export debug logs to file
+          try {
+            await Logger.exportLogs(msg.data?.format || 'json');
+            port.postMessage({ type: 'success', message: 'Logs exported successfully' });
+          } catch (error) {
+            port.postMessage({ type: 'error', message: 'Failed to export logs: ' + error.message });
+          }
+        } else if (msg.action === 'getLogStats') {
+          // Get log statistics
+          const stats = await Logger.getStats();
+          port.postMessage({ type: 'logStats', data: stats });
+        } else if (msg.action === 'clearLogs') {
+          // Clear all logs
+          await Logger.clearLogs();
+          port.postMessage({ type: 'success', message: 'Logs cleared' });
         } else if (msg.action === 'downloadMedia') {
           const { media, postInfo, saveAs } = msg.data;
 
@@ -2096,9 +2236,35 @@ async function processNextBatchUrl() {
     return;
   }
 
-  // Acquire lock
+  // Acquire lock with try/finally to ensure it's always released
   batchState.isCurrentlyProcessingUrl = true;
 
+  try {
+    await _processNextBatchUrlInner();
+  } catch (unexpectedError) {
+    // Safety net: catch any unexpected errors and ensure lock is released
+    console.error('[Background] ❌ Unexpected error in processNextBatchUrl:', unexpectedError);
+    addFailedUrl({
+      url: batchState.queue[batchState.currentIndex] || 'unknown',
+      error: `Unexpected: ${unexpectedError.message}`,
+      timestamp: Date.now()
+    });
+    batchState.currentIndex++;
+    // Schedule next URL processing after error
+    setTimeout(() => processNextBatchUrl(), CONFIG.TIMING.BATCH_DELAY_MIN);
+  } finally {
+    // Note: Lock is released within _processNextBatchUrlInner for normal flow control
+    // This finally block ensures release on unexpected exceptions
+    // Check if still locked (wasn't already released by inner function)
+    if (batchState.isCurrentlyProcessingUrl && !batchState.isPaused) {
+      console.log('[Background] 🔓 Safety: releasing lock in finally block');
+      batchState.isCurrentlyProcessingUrl = false;
+    }
+  }
+}
+
+// Inner function that does the actual batch URL processing
+async function _processNextBatchUrlInner() {
   if (batchState.currentIndex >= batchState.queue.length) {
     // Batch complete
     console.log('[Background] Batch processing complete');
@@ -2198,7 +2364,7 @@ async function processNextBatchUrl() {
     batchState.isCurrentlyProcessingUrl = false;
   } catch (error) {
     console.error('[Background] Failed to navigate to URL:', url, error);
-    batchState.failedUrls.push({ url, error: error.message });
+    addFailedUrl({ url, error: error.message });
     batchState.currentIndex++;
 
     // Add delay before next URL using CONFIG
@@ -2206,9 +2372,12 @@ async function processNextBatchUrl() {
     const delay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
     setTimeout(() => processNextBatchUrl(), delay);
   }
-}
+} // End of _processNextBatchUrlInner
 
 // Listen for tab updates to detect page loads during batch processing
+// Track which URL we're currently processing to prevent re-entrancy
+let currentlyProcessingTabUrl = null;
+
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!batchState.isProcessing || tabId !== batchState.tabId) {
     return;
@@ -2216,26 +2385,63 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   // Check if page is fully loaded
   if (changeInfo.status === 'complete' && tab.url) {
+    // RE-ENTRANCY GUARD: Skip if we're already processing this exact URL
+    if (currentlyProcessingTabUrl === tab.url) {
+      Logger.warn('TabListener', 'Skipping duplicate complete event', { url: tab.url });
+      return;
+    }
+
+    // Skip non-Instagram URLs
+    if (!tab.url.includes('instagram.com/p/') && !tab.url.includes('instagram.com/reel/')) {
+      return;
+    }
+
+    // Mark this URL as being processed
+    currentlyProcessingTabUrl = tab.url;
+    Logger.info('TabListener', 'Processing tab update', {
+      url: tab.url,
+      index: batchState.currentIndex,
+      total: batchState.queue.length
+    });
+
     console.log('[Background] 🔄 Tab update detected:', tab.url);
+    console.log('[Background] ✅ Valid Instagram post/reel detected, starting auto-extraction');
 
-    if (tab.url.includes('instagram.com/p/') || tab.url.includes('instagram.com/reel/')) {
-      console.log('[Background] ✅ Valid Instagram post/reel detected, starting auto-extraction');
+    // Reset current data BEFORE any async operations
+    currentData = {
+      postData: null,
+      comments: null,
+      media: null
+    };
 
-      // Reset current data
-      currentData = {
-        postData: null,
-        comments: null,
-        media: null
+    // Wait a bit for page to fully render
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    try {
+      // Trigger extraction via content script WITH TIMEOUT
+      console.log('[Background] 📤 Sending extraction requests to content script...');
+
+      // Wrap sendMessage with timeout to prevent hanging
+      const sendMessageWithTimeout = (tabId, message, timeout = 10000) => {
+        return promiseWithTimeout(
+          new Promise((resolve) => {
+            chrome.tabs.sendMessage(tabId, message, (response) => {
+              if (chrome.runtime.lastError) {
+                Logger.warn('SendMessage', 'Message failed', {
+                  action: message.action,
+                  error: chrome.runtime.lastError.message
+                });
+              }
+              resolve(response);
+            });
+          }),
+          timeout,
+          `sendMessage(${message.action}) timeout`
+        );
       };
 
-      // Wait a bit for page to fully render
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      try {
-        // Trigger extraction via content script
-        console.log('[Background] 📤 Sending extraction requests to content script...');
-        await chrome.tabs.sendMessage(tabId, { action: 'extractMedia' });
-        await chrome.tabs.sendMessage(tabId, { action: 'extractComments' });
+      await sendMessageWithTimeout(tabId, { action: 'extractMedia' });
+      await sendMessageWithTimeout(tabId, { action: 'extractComments' });
 
       // Wait for extractions to complete with exponential backoff polling
       console.log('[Background] Waiting for extraction to complete...');
@@ -2293,7 +2499,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           console.warn(`[Background] ⚠️ Possible silent extraction failure for ${tab.url}:`, warningReasons.join(', '));
 
           // Track this as a potential failure (but still download what we have)
-          batchState.failedUrls.push({
+          addFailedUrl({
             url: tab.url,
             error: `Partial extraction (${warningReasons.join(', ')})`,
             partialData: true,
@@ -2319,44 +2525,92 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           ? `${sanitizedRealName} - ${username}`
           : username;
 
+        // Wrap all downloads in try-catch to prevent download failures from stopping the batch
+        let downloadErrors = [];
+
         // Download media
         if (currentData.media && currentData.media.media) {
           const folderPrefix = `Instagram/${parentFolder}/${folderName}/media`;
           for (let i = 0; i < currentData.media.media.length; i++) {
-            const item = currentData.media.media[i];
-            const url = item.video_url || item.image_url;
-            const extension = getFileExtension(url, !!item.video_url);
-            const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
-            await downloadFile(url, filename, false);
+            try {
+              const item = currentData.media.media[i];
+              const url = item.video_url || item.image_url;
+              const extension = getFileExtension(url, !!item.video_url);
+              const filename = `${folderPrefix}/${filePrefix}_media_${i + 1}.${extension}`;
+              await downloadFile(url, filename, false);
+            } catch (downloadErr) {
+              console.error(`[Background] Media download ${i + 1} failed:`, downloadErr);
+              downloadErrors.push(`media_${i + 1}: ${downloadErr.message}`);
+            }
           }
         }
 
         // Download comments as JSON and CSV
         if (currentData.comments && currentData.comments.comments) {
-          const jsonFilename = `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.json`;
-          await downloadJSON(currentData.comments, jsonFilename, false);
+          try {
+            const jsonFilename = `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.json`;
+            await downloadJSON(currentData.comments, jsonFilename, false);
+          } catch (downloadErr) {
+            console.error('[Background] Comments JSON download failed:', downloadErr);
+            downloadErrors.push(`comments_json: ${downloadErr.message}`);
+          }
 
-          // Pass full currentData.comments object (includes post_info and comments)
-          const csv = commentsToCSV(currentData.comments);
-          const csvFilename = `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.csv`;
-          await downloadCSV(csv, csvFilename, false);
+          try {
+            // Pass full currentData.comments object (includes post_info and comments)
+            const csv = commentsToCSV(currentData.comments);
+            const csvFilename = `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.csv`;
+            await downloadCSV(csv, csvFilename, false);
+          } catch (downloadErr) {
+            console.error('[Background] Comments CSV download failed:', downloadErr);
+            downloadErrors.push(`comments_csv: ${downloadErr.message}`);
+          }
         }
 
         // Download metadata
-        const metadata = {
-          ...postInfo,
-          downloaded_at: new Date().toISOString(),
-          media_count: currentData.media?.media?.length || 0,
-          comment_count: currentData.comments?.total || 0
-        };
-        const metadataFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_metadata.json`;
-        await downloadJSON(metadata, metadataFilename, false);
+        try {
+          const metadata = {
+            ...postInfo,
+            downloaded_at: new Date().toISOString(),
+            media_count: currentData.media?.media?.length || 0,
+            comment_count: currentData.comments?.total || 0
+          };
+          const metadataFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_metadata.json`;
+          await downloadJSON(metadata, metadataFilename, false);
+        } catch (downloadErr) {
+          console.error('[Background] Metadata download failed:', downloadErr);
+          downloadErrors.push(`metadata: ${downloadErr.message}`);
+        }
 
         // Download HTML archive (wait a bit to ensure content script is ready for avatar fetching)
-        await new Promise(resolve => setTimeout(resolve, 1000));
-        const htmlContent = await generatePostHTML(currentData, filePrefix);
-        const htmlFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_archive.html`;
-        await downloadHTML(htmlContent, htmlFilename, false);
+        try {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          const htmlContent = await generatePostHTML(currentData, filePrefix);
+          const htmlFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_archive.html`;
+          await downloadHTML(htmlContent, htmlFilename, false);
+        } catch (downloadErr) {
+          console.error('[Background] HTML archive download failed:', downloadErr);
+          downloadErrors.push(`html_archive: ${downloadErr.message}`);
+        }
+
+        // Log any download errors and broadcast to UI
+        if (downloadErrors.length > 0) {
+          console.warn(`[Background] ⚠️ Some downloads failed for ${tab.url}:`, downloadErrors);
+
+          // Broadcast download errors to UI so user is aware
+          broadcastToUI({
+            type: 'batchProgress',
+            data: {
+              current: batchState.currentIndex + 1,
+              total: batchState.queue.length,
+              url: tab.url,
+              successCount: batchState.successCount,
+              skippedCount: batchState.skippedCount,
+              failedUrls: batchState.failedUrls,
+              downloadWarning: `⚠️ Partial: ${downloadErrors.length} file(s) failed to download`,
+              downloadErrors: downloadErrors
+            }
+          });
+        }
 
         // Capture Instagram-style screenshot
         try {
@@ -2410,6 +2664,97 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (batchState.successCount % 5 === 0) {
           await saveBatchState();
         }
+
+        // Reset consecutive errors on success
+        if (!batchState.failedUrls.find(f => f.url === tab.url)) {
+          batchState.consecutiveErrors = 0;
+        }
+
+        // Move to next URL with progressive delay
+        batchState.currentIndex++;
+
+        // Calculate delay with progressive increase
+        let baseDelay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
+
+        // Progressive delay: add more delay the more posts we've processed
+        if (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY?.ENABLED) {
+          const tier = Math.floor(batchState.successCount / (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.POSTS_PER_TIER || 50));
+          const additionalDelay = Math.min(
+            tier * (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.DELAY_INCREMENT || 2000),
+            CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.MAX_ADDITIONAL_DELAY || 10000
+          );
+          baseDelay += additionalDelay;
+
+          if (additionalDelay > 0) {
+            console.log(`[Background] 📊 Progressive delay: +${additionalDelay/1000}s (tier ${tier})`);
+          }
+        }
+
+        // Check for cooldown period
+        if (CONFIG.TIMING.BATCH_COOLDOWN?.ENABLED) {
+          const postsBeforeCooldown = CONFIG.TIMING.BATCH_COOLDOWN.POSTS_BEFORE_COOLDOWN || 100;
+          const cooldownDuration = CONFIG.TIMING.BATCH_COOLDOWN.COOLDOWN_DURATION || 60000;
+
+          if (batchState.successCount > 0 && batchState.successCount % postsBeforeCooldown === 0) {
+            console.log(`[Background] ☕ Cooldown: Taking a ${cooldownDuration/1000}s break after ${batchState.successCount} posts...`);
+
+            const pauseEndTime = Date.now() + cooldownDuration;
+
+            batchState.isPaused = true;
+
+            broadcastToUI({
+              type: 'batchProgress',
+              data: {
+                current: batchState.currentIndex,
+                total: batchState.queue.length,
+                url: 'Cooldown break...',
+                successCount: batchState.successCount,
+                skippedCount: batchState.skippedCount,
+                failedUrls: batchState.failedUrls,
+                isPaused: true,
+                pauseReason: `Cooldown break (${cooldownDuration/1000}s) after ${batchState.successCount} posts`,
+                pauseDuration: cooldownDuration,
+                pauseEndTime: pauseEndTime
+              }
+            });
+
+            // Save state before long wait (survives service worker sleep)
+            await saveBatchState();
+
+            // Use chrome.alarms for long delays (survives service worker sleep)
+            chrome.alarms.create(BATCH_COOLDOWN_ALARM, { when: pauseEndTime });
+            console.log(`[Background] ⏰ Cooldown alarm set for ${new Date(pauseEndTime).toLocaleTimeString()}`);
+            // CRITICAL FIX: Release lock before returning so alarm handler can proceed
+            batchState.isCurrentlyProcessingUrl = false;
+            currentlyProcessingTabUrl = null; // Clear re-entrancy flag
+            Logger.info('Batch', 'Cooldown break started', {
+              successCount: batchState.successCount,
+              duration: cooldownDuration
+            });
+            return; // Don't continue - alarm will trigger processNextBatchUrl
+          }
+        }
+
+        console.log(`[Background] ⏱️ Next post in ${(baseDelay/1000).toFixed(1)}s`);
+
+        // CRITICAL FIX: Clear re-entrancy flag before scheduling next
+        currentlyProcessingTabUrl = null;
+        Logger.info('TabListener', 'Post processed successfully', {
+          url: tab.url,
+          index: batchState.currentIndex,
+          successCount: batchState.successCount
+        });
+
+        // Use alarm for delays > 5 seconds to survive service worker sleep
+        if (baseDelay > 5000) {
+          chrome.alarms.create('batchNextUrl', { when: Date.now() + baseDelay });
+          batchState.isCurrentlyProcessingUrl = false;
+        } else {
+          setTimeout(() => {
+            batchState.isCurrentlyProcessingUrl = false;
+            processNextBatchUrl();
+          }, baseDelay);
+        }
       } else {
         throw new Error('Failed to extract data');
       }
@@ -2434,7 +2779,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (batchState.consecutiveErrors >= maxRetries) {
           // Too many 429 errors, stop batch processing
           console.error('[Background] 🛑 Too many 429 errors, stopping batch processing');
-          batchState.failedUrls.push({
+          addFailedUrl({
             url: tab.url,
             error: 'Rate limited - batch stopped after multiple 429 errors',
             shortcode: extractShortcode(tab.url),
@@ -2459,6 +2804,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           batchState.isProcessing = false;
           batchState.isPaused = false;
           batchState.isCurrentlyProcessingUrl = false;
+          currentlyProcessingTabUrl = null; // Clear re-entrancy flag
+
+          Logger.error('Batch', 'Stopped due to rate limiting', {
+            consecutiveErrors: batchState.consecutiveErrors,
+            url: tab.url
+          });
 
           // Clear any pending alarms
           chrome.alarms.clear(BATCH_COOLDOWN_ALARM);
@@ -2496,85 +2847,28 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         // Use chrome.alarms for long delays (survives service worker sleep)
         chrome.alarms.create(BATCH_429_RETRY_ALARM, { when: pauseEndTime });
         console.log(`[Background] ⏰ 429 retry alarm set for ${new Date(pauseEndTime).toLocaleTimeString()}`);
+        // CRITICAL FIX: Release lock before returning so alarm handler can proceed
+        batchState.isCurrentlyProcessingUrl = false;
+        currentlyProcessingTabUrl = null; // Clear re-entrancy flag
+        Logger.warn('Batch', '429 rate limit - pausing', {
+          pauseDuration: batchState.currentPauseDuration,
+          url: tab.url
+        });
         return;
       } else {
         // Non-429 error - include more context for debugging
-        batchState.failedUrls.push({
+        Logger.error('Batch', 'Post extraction failed', {
+          url: tab.url,
+          error: errorMsg
+        });
+        addFailedUrl({
           url: tab.url,
           error: errorMsg,
           shortcode: extractShortcode(tab.url),
           timestamp: Date.now()
         });
+        currentlyProcessingTabUrl = null; // Clear re-entrancy flag on error
       }
-    }
-
-      // Reset consecutive errors on success
-      if (!batchState.failedUrls.find(f => f.url === tab.url)) {
-        batchState.consecutiveErrors = 0;
-      }
-
-      // Move to next URL with progressive delay
-      batchState.currentIndex++;
-
-      // Calculate delay with progressive increase
-      let baseDelay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
-
-      // Progressive delay: add more delay the more posts we've processed
-      if (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY?.ENABLED) {
-        const tier = Math.floor(batchState.successCount / (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.POSTS_PER_TIER || 50));
-        const additionalDelay = Math.min(
-          tier * (CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.DELAY_INCREMENT || 2000),
-          CONFIG.TIMING.BATCH_PROGRESSIVE_DELAY.MAX_ADDITIONAL_DELAY || 10000
-        );
-        baseDelay += additionalDelay;
-
-        if (additionalDelay > 0) {
-          console.log(`[Background] 📊 Progressive delay: +${additionalDelay/1000}s (tier ${tier})`);
-        }
-      }
-
-      // Check for cooldown period
-      if (CONFIG.TIMING.BATCH_COOLDOWN?.ENABLED) {
-        const postsBeforeCooldown = CONFIG.TIMING.BATCH_COOLDOWN.POSTS_BEFORE_COOLDOWN || 100;
-        const cooldownDuration = CONFIG.TIMING.BATCH_COOLDOWN.COOLDOWN_DURATION || 60000;
-
-        if (batchState.successCount > 0 && batchState.successCount % postsBeforeCooldown === 0) {
-          console.log(`[Background] ☕ Cooldown: Taking a ${cooldownDuration/1000}s break after ${batchState.successCount} posts...`);
-
-          const pauseEndTime = Date.now() + cooldownDuration;
-
-          batchState.isPaused = true;
-
-          broadcastToUI({
-            type: 'batchProgress',
-            data: {
-              current: batchState.currentIndex,
-              total: batchState.queue.length,
-              url: 'Cooldown break...',
-              successCount: batchState.successCount,
-              skippedCount: batchState.skippedCount,
-              failedUrls: batchState.failedUrls,
-              isPaused: true,
-              pauseReason: `Cooldown break (${cooldownDuration/1000}s) after ${batchState.successCount} posts`,
-              pauseDuration: cooldownDuration,
-              pauseEndTime: pauseEndTime
-            }
-          });
-
-          // Save state before long wait (survives service worker sleep)
-          await saveBatchState();
-
-          // Use chrome.alarms for long delays (survives service worker sleep)
-          chrome.alarms.create(BATCH_COOLDOWN_ALARM, { when: pauseEndTime });
-          console.log(`[Background] ⏰ Cooldown alarm set for ${new Date(pauseEndTime).toLocaleTimeString()}`);
-          return; // Don't continue - alarm will trigger processNextBatchUrl
-        }
-      }
-
-      console.log(`[Background] ⏱️ Next post in ${(baseDelay/1000).toFixed(1)}s`);
-      setTimeout(() => processNextBatchUrl(), baseDelay);
-    } else {
-      console.log('[Background] ⚠️ Not an Instagram post/reel URL, skipping');
     }
   }
 });

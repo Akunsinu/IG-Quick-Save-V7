@@ -908,9 +908,6 @@
           has_replies: sample.replies.length,
           first_reply: sample.replies[0]?.text?.substring(0, 30) + '...'
         });
-      } else {
-        console.warn('[IG DL v7] ⚠️ NO COMMENTS HAVE REPLIES IN THE DATA STRUCTURE!');
-        console.warn('[IG DL v7] This means replies are not being nested properly');
       }
 
       if (grandTotal >= post.comment_count) {
