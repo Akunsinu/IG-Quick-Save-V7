@@ -169,11 +169,16 @@ const SheetsSync = {
       const namesResponse = await this._fetch(`${this.config.webAppUrl}?action=getNames`);
       const namesData = await namesResponse.json();
 
+      console.log('[SheetsSync] Names response:', namesData);
+
       this.cache.names.clear();
       const names = namesData.names || [];
+      console.log(`[SheetsSync] Processing ${names.length} name mappings...`);
       names.forEach(nameRecord => {
         if (nameRecord.username) {
-          this.cache.names.set(nameRecord.username.toLowerCase(), nameRecord.realName);
+          const normalizedUsername = nameRecord.username.toLowerCase();
+          this.cache.names.set(normalizedUsername, nameRecord.realName);
+          console.log(`[SheetsSync] Cached name: "${normalizedUsername}" -> "${nameRecord.realName}"`);
         }
       });
 
@@ -264,8 +269,18 @@ const SheetsSync = {
    * @returns {string|null} - Real name or null if not found
    */
   lookupName(username) {
-    if (!this.config.enabled || !username) return null;
-    return this.cache.names.get(username.toLowerCase().trim()) || null;
+    if (!this.config.enabled) {
+      console.log('[SheetsSync] lookupName: sync not enabled');
+      return null;
+    }
+    if (!username) {
+      console.log('[SheetsSync] lookupName: no username provided');
+      return null;
+    }
+    const normalizedUsername = username.toLowerCase().trim();
+    const realName = this.cache.names.get(normalizedUsername) || null;
+    console.log(`[SheetsSync] lookupName: "${username}" -> "${realName}" (cache size: ${this.cache.names.size})`);
+    return realName;
   },
 
   /**

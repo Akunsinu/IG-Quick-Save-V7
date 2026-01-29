@@ -7,8 +7,8 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.2.3',
-  VERSION_NAME: 'V8.2.3 - Batch Stability + Debug Logging',
+  VERSION: '8.2.4',
+  VERSION_NAME: 'V8.2.4 - Batch Stability + Debug Logging',
   RELEASE_DATE: '2026-01-28',
 
   // ============================================================================

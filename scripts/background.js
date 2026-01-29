@@ -4,6 +4,8 @@ importScripts('../config.js');
 importScripts('./sheets-sync.js');
 importScripts('./logger.js');
 
+console.log('[Background] 🚀 Service worker starting...', new Date().toISOString());
+
 // Keepalive: Ping storage periodically to prevent service worker termination
 let keepaliveInterval = setInterval(() => {
   chrome.storage.session.get('_keepalive').catch(() => {});
@@ -1635,6 +1637,15 @@ chrome.runtime.onConnect.addListener((port) => {
         } else if (msg.action === 'downloadAll') {
           const { saveAs } = msg.data;
 
+          // Refresh SheetsSync cache before download to ensure fresh name mappings
+          if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+            try {
+              await SheetsSync.refreshCache();
+            } catch (err) {
+              console.warn('[Background] SheetsSync cache refresh failed:', err.message);
+            }
+          }
+
           // Get post info from either media or comments data
           const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
           const username = postInfo.username || 'unknown';
@@ -1797,6 +1808,18 @@ chrome.runtime.onConnect.addListener((port) => {
         } else if (msg.action === 'startBatch') {
           // Start batch processing
           const { urls, skipDownloaded, profileUsername, skipSources } = msg.data;
+
+          // Refresh SheetsSync cache before starting batch to ensure fresh name mappings
+          if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
+            console.log('[Background] Refreshing SheetsSync cache before batch...');
+            try {
+              await SheetsSync.refreshCache();
+              console.log('[Background] SheetsSync cache refreshed, names:', SheetsSync.cache.names.size);
+            } catch (err) {
+              console.warn('[Background] SheetsSync cache refresh failed:', err.message);
+            }
+          }
+
           batchState.queue = urls;
           batchState.currentIndex = 0;
           batchState.successCount = 0;
@@ -2049,6 +2072,23 @@ chrome.runtime.onConnect.addListener((port) => {
           const hasMapping = SheetsSync.hasNameMapping(username);
           const realName = hasMapping ? SheetsSync.lookupName(username) : null;
           port.postMessage({ type: 'hasNameMappingResult', data: { username, hasMapping, realName } });
+
+        } else if (msg.action === 'debugNamesCache') {
+          // Debug: dump all names in cache
+          const allNames = Array.from(SheetsSync.cache.names.entries());
+          console.log('[SheetsSync] DEBUG - All cached names:', allNames);
+          console.log('[SheetsSync] DEBUG - Cache size:', SheetsSync.cache.names.size);
+          console.log('[SheetsSync] DEBUG - Config enabled:', SheetsSync.config.enabled);
+          console.log('[SheetsSync] DEBUG - Last fetched:', SheetsSync.cache.lastFetched);
+          port.postMessage({
+            type: 'debugNamesCacheResult',
+            data: {
+              names: allNames,
+              cacheSize: SheetsSync.cache.names.size,
+              enabled: SheetsSync.config.enabled,
+              lastFetched: SheetsSync.cache.lastFetched
+            }
+          });
 
         // ===== LOCAL FOLDER SCANNING HANDLERS =====
 
