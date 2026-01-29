@@ -1776,6 +1776,8 @@ chrome.runtime.onConnect.addListener((port) => {
             if (shortcode) {
               const enrichedPostInfo = {
                 ...postInfo,
+                // Ensure post_type is lowercase (fallback to 'post')
+                post_type: postInfo.post_type || 'post',
                 media_count: currentData.media?.media?.length || 0,
                 comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
               };
@@ -1794,6 +1796,8 @@ chrome.runtime.onConnect.addListener((port) => {
             if (shortcode) {
               const enrichedPostInfo = {
                 ...postInfo,
+                // Ensure post_type is lowercase (fallback to 'post')
+                post_type: postInfo.post_type || 'post',
                 media_count: currentData.media?.media?.length || 0,
                 comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
               };
@@ -2691,9 +2695,16 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         // Mark this post as downloaded with enriched info for Sheets sync
         const downloadedShortcode = extractShortcode(tab.url);
         if (downloadedShortcode) {
+          // Determine post type from URL if not in postInfo
+          const urlPostType = tab.url.includes('/reel/') ? 'reel' : 'post';
+
           const enrichedPostInfo = {
             ...postInfo,
             shortcode: downloadedShortcode,
+            // Use batchState.profileUsername as fallback for username
+            username: postInfo.username || batchState.profileUsername || 'unknown',
+            // Ensure post_type is lowercase and derived from URL if missing
+            post_type: postInfo.post_type || urlPostType,
             media_count: currentData.media?.media?.length || 0,
             comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
           };
