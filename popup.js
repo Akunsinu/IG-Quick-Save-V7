@@ -95,7 +95,7 @@ async function initializePassword() {
 // Check authentication on load
 async function checkAuthentication() {
   await initializePassword();
-  const result = await chrome.storage.local.get([CONFIG.SECURITY.AUTH_STORAGE_KEY]);
+  const result = await chrome.storage.session.get([CONFIG.SECURITY.AUTH_STORAGE_KEY]);
 
   if (result[CONFIG.SECURITY.AUTH_STORAGE_KEY]) {
     unlockExtension();
@@ -114,8 +114,8 @@ async function verifyPassword() {
   const isValid = await CONFIG.verifyPassword(enteredPassword, storedHash);
 
   if (isValid) {
-    // Correct password - save authentication state
-    await chrome.storage.local.set({ [CONFIG.SECURITY.AUTH_STORAGE_KEY]: true });
+    // Correct password - save authentication state (session storage clears on browser close)
+    await chrome.storage.session.set({ [CONFIG.SECURITY.AUTH_STORAGE_KEY]: true });
     unlockExtension();
   } else {
     // Wrong password

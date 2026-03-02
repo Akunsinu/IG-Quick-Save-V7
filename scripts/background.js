@@ -6,10 +6,23 @@ importScripts('./logger.js');
 
 console.log('[Background] 🚀 Service worker starting...', new Date().toISOString());
 
-// Keepalive: Ping storage periodically to prevent service worker termination
-let keepaliveInterval = setInterval(() => {
-  chrome.storage.session.get('_keepalive').catch(() => {});
-}, 25000);
+// Keepalive: Ping storage periodically to prevent service worker termination during batch processing
+let keepaliveInterval = null;
+
+function startKeepalive() {
+  if (keepaliveInterval) return; // Already running
+  keepaliveInterval = setInterval(() => {
+    chrome.storage.session.get('_keepalive').catch(() => {});
+  }, 25000);
+  console.log('[Background] Keepalive started');
+}
+
+function stopKeepalive() {
+  if (!keepaliveInterval) return; // Not running
+  clearInterval(keepaliveInterval);
+  keepaliveInterval = null;
+  console.log('[Background] Keepalive stopped');
+}
 
 // Utility: Wrap a promise with a timeout to prevent indefinite hangs
 function promiseWithTimeout(promise, timeoutMs, errorMessage = 'Operation timed out') {
@@ -74,6 +87,7 @@ async function restoreBatchStateIfNeeded() {
       batchState.consecutiveErrors = savedState.consecutiveErrors || 0;
       batchState.currentPauseDuration = savedState.currentPauseDuration || 0;
       batchState.isProcessing = true;
+      startKeepalive();
       console.log('[Background] ✅ State restored:', batchState.currentIndex, '/', batchState.queue.length);
     }
   }
@@ -588,8 +602,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // Keep channel open for async response
   }
-
-  return true;
 });
 
 // Offscreen document management
@@ -1878,6 +1890,7 @@ chrome.runtime.onConnect.addListener((port) => {
           batchState.skippedCount = 0;
           batchState.failedUrls = [];
           batchState.isProcessing = true;
+          startKeepalive();
           batchState.port = port;
           batchState.skipDownloaded = skipDownloaded !== false; // Default to true
           batchState.profileUsername = profileUsername || null; // Store profile username for collab handling
@@ -1930,6 +1943,7 @@ chrome.runtime.onConnect.addListener((port) => {
           // Stop batch processing and save state for resume
           console.log('[Background] Stopping batch processing');
           batchState.isProcessing = false;
+          stopKeepalive();
 
           // Flush any pending Sheets syncs before stopping
           if (pendingSheetsSync.length > 0) {
@@ -1970,6 +1984,7 @@ chrome.runtime.onConnect.addListener((port) => {
             batchState.skipDownloaded = savedState.skipDownloaded;
             batchState.profileUsername = savedState.profileUsername || null; // Restore profile username
             batchState.isProcessing = true;
+            startKeepalive();
             batchState.port = port;
             batchState.consecutiveErrors = 0;
             batchState.last429Time = null;
@@ -2400,6 +2415,7 @@ async function _processNextBatchUrlInner() {
 
     // Full state reset
     batchState.isProcessing = false;
+    stopKeepalive();
     batchState.isCurrentlyProcessingUrl = false;
     batchState.queue = [];
     batchState.currentIndex = 0;
@@ -2938,6 +2954,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
           // Reset processing state but keep queue for potential resume
           batchState.isProcessing = false;
+          stopKeepalive();
           batchState.isPaused = false;
           batchState.isCurrentlyProcessingUrl = false;
           currentlyProcessingTabUrl = null; // Clear re-entrancy flag
@@ -3003,7 +3020,13 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           shortcode: extractShortcode(tab.url),
           timestamp: Date.now()
         });
+        batchState.currentIndex++;
+        batchState.isCurrentlyProcessingUrl = false;
         currentlyProcessingTabUrl = null; // Clear re-entrancy flag on error
+
+        // Schedule next URL with delay (matches navigation-error pattern)
+        const delay = CONFIG.TIMING.BATCH_DELAY_MIN + Math.random() * (CONFIG.TIMING.BATCH_DELAY_MAX - CONFIG.TIMING.BATCH_DELAY_MIN);
+        setTimeout(() => processNextBatchUrl(), delay);
       }
     }
   }
@@ -3063,16 +3086,24 @@ chrome.action.onClicked.addListener(async (tab) => {
 // Message handler for opening side panel from popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.action === 'openSidePanel') {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (tabs[0]) {
-        try {
-          await chrome.sidePanel.open({ tabId: tabs[0].id });
-          sendResponse({ success: true });
-        } catch (error) {
-          sendResponse({ success: false, error: error.message });
+    if (!chrome.sidePanel) {
+      sendResponse({ success: false, error: 'Side panel API not available' });
+      return;
+    }
+    (async () => {
+      try {
+        // Get windowId from sender tab if available, otherwise query active window
+        let windowId = sender.tab?.windowId;
+        if (!windowId) {
+          const currentWindow = await chrome.windows.getCurrent();
+          windowId = currentWindow.id;
         }
+        await chrome.sidePanel.open({ windowId });
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({ success: false, error: error.message });
       }
-    });
+    })();
     return true; // Keep channel open for async response
   }
 

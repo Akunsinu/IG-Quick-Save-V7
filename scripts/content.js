@@ -58,7 +58,7 @@
 
   // Listen for messages from the injected script
   window.addEventListener('message', (event) => {
-    if (event.source !== window) return;
+    if (event.source !== window || event.origin !== window.location.origin) return;
 
     // Forward responses to background script
     if (event.data.type === 'POST_DATA_RESPONSE' ||
@@ -242,15 +242,15 @@
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === 'extractPostData') {
       console.log('[Content] 📩 Received extractPostData request, forwarding to inject script');
-      window.postMessage({ type: 'EXTRACT_POST_DATA' }, '*');
+      window.postMessage({ type: 'EXTRACT_POST_DATA' }, window.location.origin);
       return false; // No async response needed
     } else if (request.action === 'extractComments') {
       console.log('[Content] 📩 Received extractComments request, forwarding to inject script');
-      window.postMessage({ type: 'EXTRACT_COMMENTS' }, '*');
+      window.postMessage({ type: 'EXTRACT_COMMENTS' }, window.location.origin);
       return false; // No async response needed
     } else if (request.action === 'extractMedia') {
       console.log('[Content] 📩 Received extractMedia request, forwarding to inject script');
-      window.postMessage({ type: 'EXTRACT_MEDIA' }, '*');
+      window.postMessage({ type: 'EXTRACT_MEDIA' }, window.location.origin);
       return false; // No async response needed
     } else if (request.action === 'getPageInfo') {
       // Return basic page information
@@ -414,31 +414,31 @@
         type: 'START_PROFILE_SCRAPE',
         count: request.count || 0,
         existingPosts: request.existingPosts || null
-      }, '*');
+      }, window.location.origin);
       sendResponse({ success: true });
       return false;
     } else if (request.action === 'stopProfileScrape') {
       // Stop profile scraping
       console.log('[Content] 📩 Stopping profile scrape');
-      window.postMessage({ type: 'STOP_PROFILE_SCRAPE' }, '*');
+      window.postMessage({ type: 'STOP_PROFILE_SCRAPE' }, window.location.origin);
       sendResponse({ success: true });
       return false;
     } else if (request.action === 'pauseProfileScrape') {
       // Pause profile scraping (manual pause)
       console.log('[Content] 📩 Pausing profile scrape');
-      window.postMessage({ type: 'PAUSE_PROFILE_SCRAPE' }, '*');
+      window.postMessage({ type: 'PAUSE_PROFILE_SCRAPE' }, window.location.origin);
       sendResponse({ success: true });
       return false;
     } else if (request.action === 'resumeProfileScrape') {
       // Resume profile scraping
       console.log('[Content] 📩 Resuming profile scrape');
-      window.postMessage({ type: 'RESUME_PROFILE_SCRAPE' }, '*');
+      window.postMessage({ type: 'RESUME_PROFILE_SCRAPE' }, window.location.origin);
       sendResponse({ success: true });
       return false;
     } else if (request.action === 'continueNowProfileScrape') {
       // Continue now (skip countdown)
       console.log('[Content] 📩 Continue now profile scrape');
-      window.postMessage({ type: 'CONTINUE_NOW_PROFILE_SCRAPE' }, '*');
+      window.postMessage({ type: 'CONTINUE_NOW_PROFILE_SCRAPE' }, window.location.origin);
       sendResponse({ success: true });
       return false;
     } else if (request.action === 'getProfileStatus') {

@@ -5,6 +5,42 @@
   console.log('[IG DL V2] 🚀 Starting - Optimized extraction engine loaded...');
 
   let cachedPostData = null;
+  let cachedPostUrl = null;
+
+  // Clear cached post data when URL changes (SPA navigation)
+  function clearCacheIfUrlChanged() {
+    const currentUrl = window.location.href;
+    if (cachedPostUrl && currentUrl !== cachedPostUrl) {
+      console.log('[IG DL V2] 🔄 URL changed, clearing cached post data');
+      console.log('[IG DL V2]   Old:', cachedPostUrl);
+      console.log('[IG DL V2]   New:', currentUrl);
+      cachedPostData = null;
+      cachedPostUrl = null;
+    }
+  }
+
+  // Hook into history API to detect SPA navigation
+  const originalPushState = history.pushState;
+  history.pushState = function() {
+    originalPushState.apply(this, arguments);
+    console.log('[IG DL V2] 🔄 pushState detected, clearing cache');
+    cachedPostData = null;
+    cachedPostUrl = null;
+  };
+
+  const originalReplaceState = history.replaceState;
+  history.replaceState = function() {
+    originalReplaceState.apply(this, arguments);
+    console.log('[IG DL V2] 🔄 replaceState detected, clearing cache');
+    cachedPostData = null;
+    cachedPostUrl = null;
+  };
+
+  window.addEventListener('popstate', () => {
+    console.log('[IG DL V2] 🔄 popstate detected, clearing cache');
+    cachedPostData = null;
+    cachedPostUrl = null;
+  });
 
   // Adaptive rate limiting state
   let rateLimitState = {
@@ -339,6 +375,7 @@
                     }
 
                     cachedPostData = post;
+                    cachedPostUrl = window.location.href;
                     window.__foundPost = post;
                     return { shortcode, post, method: 'script-tag-parsing' };
                   }
@@ -362,6 +399,9 @@
 
   // Extract post data
   async function extractPostData() {
+    // Check if URL changed since we cached (SPA navigation)
+    clearCacheIfUrlChanged();
+
     if (cachedPostData) {
       const url = window.location.href;
       const shortcodeMatch = url.match(/\/(p|reel)\/([^\/\?]+)/);
@@ -491,6 +531,7 @@
       let hasMore = true;
       let minId = null;
       let requestCount = 0;
+      let isRateLimited = false;
       const maxRequests = CONFIG.API.MAX_CHILD_COMMENT_REQUESTS;
 
       while (hasMore && requestCount < maxRequests) {
@@ -840,7 +881,7 @@
 
   // Helper to send progress updates
   function sendProgress(message) {
-    window.postMessage({ type: 'EXTRACTION_PROGRESS', message }, '*');
+    window.postMessage({ type: 'EXTRACTION_PROGRESS', message }, window.location.origin);
   }
 
   // Extract comments
@@ -1024,17 +1065,17 @@
       console.log('[IG DL v7] 🔔 EXTRACT_POST_DATA message received!');
       const data = await extractPostData();
       console.log('[IG DL v7] 📤 Sending POST_DATA_RESPONSE');
-      window.postMessage({ type: 'POST_DATA_RESPONSE', data }, '*');
+      window.postMessage({ type: 'POST_DATA_RESPONSE', data }, window.location.origin);
     } else if (event.data.type === 'EXTRACT_COMMENTS') {
       console.log('[IG DL v7] 🔔 EXTRACT_COMMENTS message received!');
       const data = await extractComments();
       console.log('[IG DL v7] 📤 Sending COMMENTS_RESPONSE with', data.comments?.length || 0, 'comments');
-      window.postMessage({ type: 'COMMENTS_RESPONSE', data }, '*');
+      window.postMessage({ type: 'COMMENTS_RESPONSE', data }, window.location.origin);
     } else if (event.data.type === 'EXTRACT_MEDIA') {
       console.log('[IG DL v7] 🔔 EXTRACT_MEDIA message received!');
       const data = await extractMedia();
       console.log('[IG DL v7] 📤 Sending MEDIA_RESPONSE');
-      window.postMessage({ type: 'MEDIA_RESPONSE', data }, '*');
+      window.postMessage({ type: 'MEDIA_RESPONSE', data }, window.location.origin);
     }
   });
 
@@ -1046,7 +1087,7 @@
       console.log('[IG DL V2] ✅ Ready! Post data parsed successfully');
       console.log('[IG DL V2] 📝 Tip: Scroll to comments section before extracting for complete data');
       console.log('[IG DL V2] 🚀 Features: Adaptive rate limiting · Fetch timeouts · Smart error handling');
-      window.postMessage({ type: 'INJECT_READY' }, '*');
+      window.postMessage({ type: 'INJECT_READY' }, window.location.origin);
     }
   }, 1000);
 

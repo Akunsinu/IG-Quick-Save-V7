@@ -51,7 +51,7 @@
     },
     {
       "resources": ["viewer/instagram-viewer.html", "viewer/viewer.js", "viewer/html2canvas.min.js", "folder-scan.html", "folder-scan.js"],
-      "matches": ["<all_urls>"]
+      "matches": ["https://www.instagram.com/*"]
     }
   ]
 }

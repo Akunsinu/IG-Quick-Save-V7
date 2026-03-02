@@ -241,10 +241,10 @@ const CONFIG = {
   // ============================================================================
 
   DEBUG: {
-    ENABLE_CONSOLE_LOGS: true,                // Set to false for production
-    ENABLE_VERBOSE_LOGS: true,                // Extra detailed logs
-    LOG_API_REQUESTS: true,                   // Log all API calls
-    LOG_RATE_LIMITS: true,                    // Log rate limit info
+    ENABLE_CONSOLE_LOGS: false,               // Set to false for production
+    ENABLE_VERBOSE_LOGS: false,               // Extra detailed logs
+    LOG_API_REQUESTS: false,                  // Log all API calls
+    LOG_RATE_LIMITS: false,                   // Log rate limit info
   },
 
   // ============================================================================

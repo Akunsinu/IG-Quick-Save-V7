@@ -163,7 +163,7 @@
         currentChunk: currentChunk + 1,
         totalChunks: totalChunks,
         isPaused: isPausedForChunk
-      }, '*');
+      }, window.location.origin);
 
       // Check if we've crossed a chunk boundary
       const newChunkBoundary = Math.floor(collectedPosts.length / SCRAPE_CONFIG.POSTS_PER_CHUNK);
@@ -199,7 +199,7 @@
       pauseDuration: SCRAPE_CONFIG.CHUNK_PAUSE_MS,
       posts: collectedPosts,
       username: currentUsername
-    }, '*');
+    }, window.location.origin);
 
     // Set timeout for auto-resume (unless manual pause requested)
     if (!manualPauseRequested) {
@@ -234,7 +234,7 @@
       type: 'PROFILE_SCRAPE_RESUMED',
       count: collectedPosts.length,
       targetCount: targetPostCount
-    }, '*');
+    }, window.location.origin);
 
     // Continue scrolling
     if (isCollecting && !stopRequested) {
@@ -270,7 +270,7 @@
         posts: collectedPosts,
         username: currentUsername,
         isManualPause: true
-      }, '*');
+      }, window.location.origin);
     }
   }
 
@@ -287,7 +287,7 @@
     window.postMessage({
       type: 'PROFILE_SCRAPE_SAVE_STATE',
       state: state
-    }, '*');
+    }, window.location.origin);
 
     console.log('[IG Profile Scraper] 💾 Progress saved:', collectedPosts.length, 'posts');
   }
@@ -391,7 +391,7 @@
       targetCount: targetPostCount,
       currentChunk: lastChunkBoundary + 1,
       totalChunks: targetPostCount > 0 ? Math.ceil(targetPostCount / SCRAPE_CONFIG.POSTS_PER_CHUNK) : '?'
-    }, '*');
+    }, window.location.origin);
 
     // First, collect posts already visible in DOM
     const initialPosts = parsePostsFromDOM();
@@ -462,7 +462,7 @@
       postUrls: postUrls,
       count: finalPosts.length,
       username: currentUsername
-    }, '*');
+    }, window.location.origin);
   }
 
   // Helper to check if URL is a GraphQL endpoint
@@ -535,7 +535,7 @@
       currentChunk: currentChunk + 1,
       totalChunks: totalChunks,
       isPaused: isPausedForChunk
-    }, '*');
+    }, window.location.origin);
   }
 
   // Fetch Interception - capture fetch API responses
@@ -564,7 +564,7 @@
               posts: collectedPosts,
               username: currentUsername,
               errorStatus: response.status
-            }, '*');
+            }, window.location.origin);
             isCollecting = false;
             isPausedForChunk = true;
           } else {
@@ -609,7 +609,7 @@
               posts: collectedPosts,
               username: currentUsername,
               errorStatus: this.status
-            }, '*');
+            }, window.location.origin);
 
             // Stop collecting
             isCollecting = false;
@@ -676,7 +676,7 @@
         collectedCount: collectedPosts.length,
         isPaused: isPausedForChunk,
         isManualPause: manualPauseRequested
-      }, '*');
+      }, window.location.origin);
     }
   });
 
@@ -691,7 +691,7 @@
       window.postMessage({
         type: 'PROFILE_SCRAPER_READY',
         username: username
-      }, '*');
+      }, window.location.origin);
     }
   }, 1000);
 
