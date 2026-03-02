@@ -141,6 +141,47 @@ let batchState = {
   isPaused: false
 };
 
+// ===== Pending Sheets Sync Queue (for reliable batch syncing) =====
+let pendingSheetsSync = [];    // Accumulated during batch, flushed in bulk
+let failedSheetsSync = [];     // Retry queue for failed syncs
+
+// Flush pending Sheets sync records in bulk using trackBatchDownloads
+async function flushPendingSheetsSync() {
+  if (pendingSheetsSync.length === 0) return;
+  if (typeof SheetsSync === 'undefined' || !SheetsSync.config.enabled) {
+    pendingSheetsSync = [];
+    return;
+  }
+
+  const toSync = pendingSheetsSync.splice(0); // Take all pending and clear
+  console.log(`[Background] 📊 Flushing ${toSync.length} downloads to Sheets...`);
+
+  try {
+    const result = await SheetsSync.trackBatchDownloads(toSync);
+    if (result.success) {
+      console.log(`[Background] ✅ Sheets batch sync: ${result.added} added, ${result.duplicates} duplicates`);
+    } else {
+      console.error('[Background] ❌ Sheets batch sync failed:', result.error);
+      // Put back into retry queue
+      failedSheetsSync.push(...toSync);
+    }
+  } catch (error) {
+    console.error('[Background] ❌ Sheets batch sync error:', error.message);
+    // Put back into retry queue
+    failedSheetsSync.push(...toSync);
+  }
+}
+
+// Retry any previously failed Sheets syncs
+async function retryFailedSheetsSync() {
+  if (failedSheetsSync.length === 0) return;
+
+  console.log(`[Background] 🔄 Retrying ${failedSheetsSync.length} failed Sheets syncs...`);
+  const toRetry = failedSheetsSync.splice(0);
+  pendingSheetsSync.push(...toRetry);
+  await flushPendingSheetsSync();
+}
+
 // Helper: Safely add to failedUrls with size limit to prevent memory bloat
 function addFailedUrl(failedUrlEntry) {
   const maxSize = CONFIG?.PERFORMANCE?.MAX_FAILED_URLS || 500;
@@ -358,8 +399,15 @@ async function markAsDownloaded(shortcode, postInfo = null) {
 
     // Sync to Google Sheets if enabled and postInfo provided
     if (postInfo && typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
-      const syncResult = await SheetsSync.trackDownload(postInfo);
-      console.log('[Background] Sheets sync result:', syncResult);
+      if (batchState.isProcessing) {
+        // During batch: accumulate for bulk sync (more reliable than per-post HTTP calls)
+        pendingSheetsSync.push(postInfo);
+        console.log('[Background] Queued for Sheets batch sync:', shortcode, '(pending:', pendingSheetsSync.length, ')');
+      } else {
+        // Single post: sync immediately
+        const syncResult = await SheetsSync.trackDownload(postInfo);
+        console.log('[Background] Sheets sync result:', syncResult);
+      }
     }
   } catch (error) {
     console.error('[Background] Error saving downloaded shortcode:', error);
@@ -1883,6 +1931,12 @@ chrome.runtime.onConnect.addListener((port) => {
           console.log('[Background] Stopping batch processing');
           batchState.isProcessing = false;
 
+          // Flush any pending Sheets syncs before stopping
+          if (pendingSheetsSync.length > 0) {
+            console.log(`[Background] 📊 Flushing ${pendingSheetsSync.length} pending Sheets syncs before stop...`);
+            await flushPendingSheetsSync();
+          }
+
           // Save state for potential resume
           await saveBatchState();
 
@@ -2313,6 +2367,26 @@ async function _processNextBatchUrlInner() {
     // Batch complete
     console.log('[Background] Batch processing complete');
 
+    // Flush any remaining Sheets sync records before completing
+    if (pendingSheetsSync.length > 0) {
+      console.log(`[Background] 📊 Final Sheets flush: ${pendingSheetsSync.length} remaining downloads...`);
+      await flushPendingSheetsSync();
+    }
+    // Retry any that failed during the batch
+    if (failedSheetsSync.length > 0) {
+      console.log(`[Background] 🔄 Final retry: ${failedSheetsSync.length} failed Sheets syncs...`);
+      await retryFailedSheetsSync();
+    }
+    // Log if any still failed after retry
+    if (failedSheetsSync.length > 0) {
+      console.error(`[Background] ⚠️ ${failedSheetsSync.length} downloads could not be synced to Sheets`);
+      broadcastToUI({
+        type: 'warning',
+        message: `⚠️ ${failedSheetsSync.length} downloads failed to sync to Google Sheets. They are saved locally.`
+      });
+      failedSheetsSync = [];
+    }
+
     // Send completion message before resetting state
     broadcastToUI({
       type: 'batchComplete',
@@ -2716,6 +2790,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           await saveBatchState();
         }
 
+        // Flush Sheets sync periodically (every 10 accumulated downloads)
+        if (pendingSheetsSync.length >= 10) {
+          await flushPendingSheetsSync();
+        }
+
         // Reset consecutive errors on success
         if (!batchState.failedUrls.find(f => f.url === tab.url)) {
           batchState.consecutiveErrors = 0;
@@ -2847,6 +2926,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
               stoppedDueToRateLimit: true
             }
           });
+
+          // Flush any pending Sheets syncs before stopping
+          if (pendingSheetsSync.length > 0) {
+            console.log(`[Background] 📊 Flushing ${pendingSheetsSync.length} pending Sheets syncs before rate-limit stop...`);
+            await flushPendingSheetsSync();
+          }
 
           // Save state before stopping (user can resume later)
           await saveBatchState();
