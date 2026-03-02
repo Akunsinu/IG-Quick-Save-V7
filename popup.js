@@ -58,25 +58,23 @@ const skipNameBtn = document.getElementById('skipNameBtn');
 let pendingDownloadAction = null;
 let pendingUsername = null;
 
-// Side panel button handler
+// Side panel button handler - must call chrome.sidePanel.open() directly from popup
+// (user gesture context doesn't propagate through chrome.runtime.sendMessage to background)
 if (openSidePanelBtn) {
   openSidePanelBtn.addEventListener('click', async () => {
     try {
-      // Send message to background to open side panel
-      const response = await chrome.runtime.sendMessage({ action: 'openSidePanel' });
-      if (response && response.success) {
-        // Close the popup after opening side panel
-        window.close();
-      } else {
-        console.log('[Popup] Could not open side panel:', response?.error);
-        // Show tooltip or feedback
+      if (!chrome.sidePanel) {
         openSidePanelBtn.textContent = '⚠️ Unavailable';
-        setTimeout(() => {
-          openSidePanelBtn.textContent = '📌 Pin to Side';
-        }, 2000);
+        setTimeout(() => { openSidePanelBtn.textContent = '📌 Pin to Side'; }, 2000);
+        return;
       }
+      const currentWindow = await chrome.windows.getCurrent();
+      await chrome.sidePanel.open({ windowId: currentWindow.id });
+      window.close();
     } catch (error) {
       console.error('[Popup] Error opening side panel:', error);
+      openSidePanelBtn.textContent = '⚠️ Unavailable';
+      setTimeout(() => { openSidePanelBtn.textContent = '📌 Pin to Side'; }, 2000);
     }
   });
 }

@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.2.5',
-  VERSION_NAME: 'V8.2.5 - Sheets Sync Improvements',
-  RELEASE_DATE: '2026-01-28',
+  VERSION: '8.3.0',
+  VERSION_NAME: 'V8.3.0 - Security, Stability & Performance',
+  RELEASE_DATE: '2026-03-02',
 
   // ============================================================================
   // TIMING & DELAYS
