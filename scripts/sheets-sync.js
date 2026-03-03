@@ -83,16 +83,22 @@ const SheetsSync = {
       this.config.userId = userId;
       this.config.enabled = !!(webAppUrl && userId);
 
+      // Save config immediately (don't block on cache refresh)
       await chrome.storage.local.set({
         sheetsWebAppUrl: webAppUrl,
         sheetsUserId: userId,
         sheetsSyncEnabled: this.config.enabled
       });
 
-      // If enabled, refresh cache
+      // If enabled, try to refresh cache (but don't fail the configure if it times out)
       if (this.config.enabled) {
-        const refreshResult = await this.refreshCache();
-        return { success: true, enabled: this.config.enabled, ...refreshResult };
+        try {
+          const refreshResult = await this.refreshCache();
+          return { success: true, enabled: this.config.enabled, ...refreshResult };
+        } catch (refreshError) {
+          console.warn('[SheetsSync] Cache refresh failed during configure (config still saved):', refreshError.message);
+          return { success: true, enabled: this.config.enabled, cacheError: refreshError.message };
+        }
       }
 
       return { success: true, enabled: this.config.enabled };
@@ -205,7 +211,12 @@ const SheetsSync = {
 
     } catch (error) {
       console.error('[SheetsSync] Refresh error:', error);
-      return { success: false, error: error.message };
+      // Provide a more helpful message for abort/timeout errors
+      let errorMsg = error.message;
+      if (error.name === 'AbortError' || errorMsg.includes('abort')) {
+        errorMsg = 'Google Apps Script took too long to respond. This is normal on first use (cold start). Try again in a moment.';
+      }
+      return { success: false, error: errorMsg };
     }
   },
 
@@ -575,16 +586,23 @@ const SheetsSync = {
   },
 
   /**
-   * Helper: Fetch with timeout
+   * Helper: Fetch with timeout and redirect handling
    */
   async _fetch(url, options = {}) {
+    const timeoutMs = options._timeout || 60000; // 60 second default (GAS cold starts can be slow)
+    delete options._timeout;
+
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+    const timeout = setTimeout(
+      () => controller.abort(`Request timed out after ${timeoutMs / 1000}s`),
+      timeoutMs
+    );
 
     try {
       const response = await fetch(url, {
         ...options,
-        signal: controller.signal
+        signal: controller.signal,
+        redirect: 'follow'
       });
       return response;
     } finally {
