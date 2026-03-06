@@ -6,7 +6,8 @@ importScripts('./logger.js');
 
 console.log('[Background] 🚀 Service worker starting...', new Date().toISOString());
 
-// Keepalive: Ping storage periodically to prevent service worker termination during batch processing
+// Keepalive: Ping storage periodically to prevent service worker termination
+// Active when any UI is connected (popup/sidepanel) OR during batch processing
 let keepaliveInterval = null;
 
 function startKeepalive() {
@@ -18,7 +19,9 @@ function startKeepalive() {
 }
 
 function stopKeepalive() {
-  if (!keepaliveInterval) return; // Not running
+  // Don't stop if any UI is connected or batch is running
+  if (activePopupPort || activeSidePanelPort || batchState.isProcessing) return;
+  if (!keepaliveInterval) return;
   clearInterval(keepaliveInterval);
   keepaliveInterval = null;
   console.log('[Background] Keepalive stopped');
@@ -1502,6 +1505,8 @@ chrome.runtime.onConnect.addListener((port) => {
       activeSidePanelPort = port;
       console.log('[Background] Side panel connected, progress messages enabled');
     }
+    // Keep service worker alive while UI is connected
+    startKeepalive();
 
     // Clear the port reference when disconnected
     port.onDisconnect.addListener(() => {
@@ -1512,6 +1517,8 @@ chrome.runtime.onConnect.addListener((port) => {
         activeSidePanelPort = null;
         console.log('[Background] Side panel disconnected, progress messages disabled');
       }
+      // Stop keepalive if no UI connected and no batch running
+      stopKeepalive();
     });
 
     port.onMessage.addListener(async (msg) => {
