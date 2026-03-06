@@ -316,6 +316,7 @@
 
     // Check if we've reached target
     if (targetPostCount > 0 && collectedPosts.length >= targetPostCount) {
+      finishCollection();
       return;
     }
 
@@ -493,6 +494,11 @@
       });
 
       notifyProgress();
+
+      // Check if we've reached target
+      if (targetPostCount > 0 && collectedPosts.length >= targetPostCount) {
+        finishCollection();
+      }
       return true;
     }
 
@@ -517,6 +523,11 @@
       });
 
       notifyProgress();
+
+      // Check if we've reached target
+      if (targetPostCount > 0 && collectedPosts.length >= targetPostCount) {
+        finishCollection();
+      }
       return true;
     }
 
