@@ -6,6 +6,9 @@ importScripts('./logger.js');
 
 console.log('[Background] 🚀 Service worker starting...', new Date().toISOString());
 
+// SheetsSync init promise - assigned near bottom after SheetsSync.init(), used by restoreBatchStateIfNeeded
+let sheetsSyncInitPromise = null;
+
 // Keepalive: Ping storage periodically to prevent service worker termination
 // Active when any UI is connected (popup/sidepanel) OR during batch processing
 let keepaliveInterval = null;
@@ -66,6 +69,8 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   } else if (alarm.name === 'batchNextUrl') {
     // Process next URL in batch after delay
     if (typeof Logger !== 'undefined') Logger.debug('Alarm', 'batchNextUrl alarm fired');
+    // Restore state if service worker was sleeping (same as cooldown/429 alarms)
+    await restoreBatchStateIfNeeded();
     if (batchState.isProcessing && !batchState.isPaused) {
       batchState.isCurrentlyProcessingUrl = false;
       processNextBatchUrl();
@@ -75,6 +80,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 // Restore batch state from storage if service worker woke up fresh
 async function restoreBatchStateIfNeeded() {
+  // Ensure SheetsSync is initialized (needed for real name lookups after SW restart)
+  if (typeof SheetsSync !== 'undefined' && !SheetsSync.config.enabled && sheetsSyncInitPromise) {
+    try {
+      await sheetsSyncInitPromise;
+      console.log('[Background] 🔄 SheetsSync init awaited after SW wake, names cache:', SheetsSync.cache.names.size);
+    } catch (err) {
+      console.warn('[Background] SheetsSync init await failed:', err.message);
+    }
+  }
+
   // If batchState has no queue, we may have woken up from sleep
   if (batchState.queue.length === 0) {
     const savedState = await loadSavedBatchState();
@@ -87,11 +102,26 @@ async function restoreBatchStateIfNeeded() {
       batchState.failedUrls = savedState.failedUrls || [];
       batchState.skipDownloaded = savedState.skipDownloaded !== undefined ? savedState.skipDownloaded : true;
       batchState.profileUsername = savedState.profileUsername || null;
+      batchState.tabId = savedState.tabId || null;
       batchState.consecutiveErrors = savedState.consecutiveErrors || 0;
       batchState.currentPauseDuration = savedState.currentPauseDuration || 0;
       batchState.isProcessing = true;
       startKeepalive();
-      console.log('[Background] ✅ State restored:', batchState.currentIndex, '/', batchState.queue.length);
+
+      // If tabId is missing or tab no longer exists, try to find an Instagram tab
+      if (!batchState.tabId) {
+        try {
+          const [tab] = await chrome.tabs.query({ url: '*://www.instagram.com/*', currentWindow: true });
+          if (tab) {
+            batchState.tabId = tab.id;
+            console.log('[Background] 🔄 Found Instagram tab for batch:', tab.id);
+          }
+        } catch (e) {
+          console.warn('[Background] Could not find Instagram tab:', e.message);
+        }
+      }
+
+      console.log('[Background] ✅ State restored:', batchState.currentIndex, '/', batchState.queue.length, 'tabId:', batchState.tabId);
     }
   }
 }
@@ -230,6 +260,7 @@ async function saveBatchState() {
     failedUrls: batchState.failedUrls,
     skipDownloaded: batchState.skipDownloaded,
     profileUsername: batchState.profileUsername, // Preserve profile username for resume
+    tabId: batchState.tabId, // Preserve tab ID for navigation after SW restart
     // Rate limit state (for surviving service worker sleep)
     consecutiveErrors: batchState.consecutiveErrors,
     currentPauseDuration: batchState.currentPauseDuration,
@@ -2500,9 +2531,24 @@ async function _processNextBatchUrlInner() {
   try {
     // Navigate to the URL
     await chrome.tabs.update(batchState.tabId, { url: url });
-    // Wait for page load and extraction - handled by tab update listener
     // Release lock after successful navigation (tab listener will handle next steps)
     batchState.isCurrentlyProcessingUrl = false;
+
+    // Safety timeout: if tab listener doesn't process this URL within 60s, advance
+    // This prevents permanent stalls from redirects, non-IG pages, or missed events
+    const navigationIndex = batchState.currentIndex; // Capture current index
+    setTimeout(() => {
+      // Only trigger if we're still stuck on the same URL
+      if (batchState.isProcessing && batchState.currentIndex === navigationIndex && !batchState.isPaused) {
+        console.warn(`[Background] ⚠️ Navigation safety timeout for index ${navigationIndex}: ${url}`);
+        addFailedUrl({ url, error: 'Navigation timeout - page did not load or was redirected', timestamp: Date.now() });
+        batchState.currentIndex++;
+        currentlyProcessingTabUrl = null;
+        batchState.isCurrentlyProcessingUrl = false;
+        const delay = CONFIG.TIMING.BATCH_DELAY_MIN;
+        setTimeout(() => processNextBatchUrl(), delay);
+      }
+    }, 60000); // 60 second safety net
   } catch (error) {
     console.error('[Background] Failed to navigate to URL:', url, error);
     addFailedUrl({ url, error: error.message });
@@ -2808,10 +2854,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           await markAsDownloaded(downloadedShortcode, enrichedPostInfo);
         }
 
-        // Save batch state periodically (every 5 successful downloads)
-        if (batchState.successCount % 5 === 0) {
-          await saveBatchState();
-        }
+        // Save batch state after every download (SW can sleep during 8-12s alarm delays)
+        await saveBatchState();
 
         // Flush Sheets sync periodically (every 10 accumulated downloads)
         if (pendingSheetsSync.length >= 10) {
@@ -3041,12 +3085,14 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 console.log('[Instagram Downloader V2] 🚀 Background script loaded - Optimized version');
 
-// Initialize Google Sheets Sync module
+// Initialize Google Sheets Sync module - store promise so we can await it later
 if (typeof SheetsSync !== 'undefined') {
-  SheetsSync.init().then(enabled => {
+  sheetsSyncInitPromise = SheetsSync.init().then(enabled => {
     console.log('[Background] SheetsSync initialized:', enabled ? 'ENABLED' : 'disabled');
+    return enabled;
   }).catch(error => {
     console.error('[Background] SheetsSync init error:', error);
+    return false;
   });
 }
 
