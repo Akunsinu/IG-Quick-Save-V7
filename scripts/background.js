@@ -81,10 +81,21 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // Restore batch state from storage if service worker woke up fresh
 async function restoreBatchStateIfNeeded() {
   // Ensure SheetsSync is initialized (needed for real name lookups after SW restart)
-  if (typeof SheetsSync !== 'undefined' && !SheetsSync.config.enabled && sheetsSyncInitPromise) {
+  if (typeof SheetsSync !== 'undefined' && sheetsSyncInitPromise) {
     try {
       await sheetsSyncInitPromise;
       console.log('[Background] 🔄 SheetsSync init awaited after SW wake, names cache:', SheetsSync.cache.names.size);
+
+      // If enabled but cache is empty (init's refreshCache failed), retry once
+      if (SheetsSync.config.enabled && !SheetsSync.cache.lastFetched) {
+        console.warn('[Background] 🔄 SheetsSync cache is empty after init, retrying refresh...');
+        const retryResult = await SheetsSync.refreshCache();
+        if (retryResult.success) {
+          console.log('[Background] ✅ SheetsSync cache retry succeeded:', SheetsSync.cache.names.size, 'names');
+        } else {
+          console.warn('[Background] ⚠️ SheetsSync cache retry also failed:', retryResult.error);
+        }
+      }
     } catch (err) {
       console.warn('[Background] SheetsSync init await failed:', err.message);
     }
@@ -1737,10 +1748,9 @@ chrome.runtime.onConnect.addListener((port) => {
 
           // Refresh SheetsSync cache before download to ensure fresh name mappings
           if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
-            try {
-              await SheetsSync.refreshCache();
-            } catch (err) {
-              console.warn('[Background] SheetsSync cache refresh failed:', err.message);
+            const refreshResult = await SheetsSync.refreshCache();
+            if (!refreshResult.success) {
+              console.warn('[Background] SheetsSync cache refresh failed before download:', refreshResult.error);
             }
           }
 
@@ -1914,11 +1924,11 @@ chrome.runtime.onConnect.addListener((port) => {
           // Refresh SheetsSync cache before starting batch to ensure fresh name mappings
           if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
             console.log('[Background] Refreshing SheetsSync cache before batch...');
-            try {
-              await SheetsSync.refreshCache();
+            const refreshResult = await SheetsSync.refreshCache();
+            if (refreshResult.success) {
               console.log('[Background] SheetsSync cache refreshed, names:', SheetsSync.cache.names.size);
-            } catch (err) {
-              console.warn('[Background] SheetsSync cache refresh failed:', err.message);
+            } else {
+              console.warn('[Background] SheetsSync cache refresh failed before batch:', refreshResult.error);
             }
           }
 

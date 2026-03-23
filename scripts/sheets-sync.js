@@ -59,10 +59,14 @@ const SheetsSync = {
 
       // If enabled and configured, refresh cache
       if (this.config.enabled && this.config.webAppUrl) {
-        await this.refreshCache();
+        const refreshResult = await this.refreshCache();
+        if (!refreshResult.success) {
+          console.warn('[SheetsSync] Init cache refresh failed (config loaded but cache is empty):', refreshResult.error);
+        }
       }
 
-      console.log('[SheetsSync] Initialized:', this.config.enabled ? 'ENABLED' : 'disabled');
+      console.log('[SheetsSync] Initialized:', this.config.enabled ? 'ENABLED' : 'disabled',
+        this.config.enabled ? `(cache: ${this.cache.downloads.size} downloads, ${this.cache.names.size} names, lastFetched: ${this.cache.lastFetched ? 'yes' : 'NO'})` : '');
       return this.config.enabled;
     } catch (error) {
       console.error('[SheetsSync] Init error:', error);
@@ -92,12 +96,13 @@ const SheetsSync = {
 
       // If enabled, try to refresh cache (but don't fail the configure if it times out)
       if (this.config.enabled) {
-        try {
-          const refreshResult = await this.refreshCache();
+        const refreshResult = await this.refreshCache();
+        if (refreshResult.success) {
           return { success: true, enabled: this.config.enabled, ...refreshResult };
-        } catch (refreshError) {
-          console.warn('[SheetsSync] Cache refresh failed during configure (config still saved):', refreshError.message);
-          return { success: true, enabled: this.config.enabled, cacheError: refreshError.message };
+        } else {
+          // Config was saved successfully, but cache refresh failed (e.g., cold start timeout)
+          console.warn('[SheetsSync] Cache refresh failed during configure (config still saved):', refreshResult.error);
+          return { success: true, enabled: this.config.enabled, cacheError: refreshResult.error };
         }
       }
 
@@ -130,6 +135,12 @@ const SheetsSync = {
     try {
       console.log('[SheetsSync] Refreshing cache from Google Sheets...');
 
+      // Build new caches in temporary Maps first, then swap atomically
+      // This prevents partial cache corruption if a later fetch fails
+      const newDownloads = new Map();
+      const newProfiles = new Map();
+      const newNames = new Map();
+
       // Fetch all downloads
       const downloadsResponse = await this._fetch(`${this.config.webAppUrl}?action=getAll`);
 
@@ -143,8 +154,6 @@ const SheetsSync = {
         throw new Error(downloadsData.error);
       }
 
-      // Update local cache with size limit
-      this.cache.downloads.clear();
       const downloads = downloadsData.downloads || [];
       const maxCacheSize = (typeof CONFIG !== 'undefined' && CONFIG?.PERFORMANCE?.MAX_SHEETS_CACHE_SIZE) || 50000;
 
@@ -158,35 +167,56 @@ const SheetsSync = {
       }
 
       downloadsToCache.forEach(record => {
-        this.cache.downloads.set(record.shortcode, record);
+        newDownloads.set(record.shortcode, record);
       });
 
       // Fetch profile stats
       const profilesResponse = await this._fetch(`${this.config.webAppUrl}?action=getProfiles`);
+
+      if (!profilesResponse.ok) {
+        throw new Error(`HTTP ${profilesResponse.status}: ${profilesResponse.statusText}`);
+      }
+
       const profilesData = await profilesResponse.json();
 
-      this.cache.profiles.clear();
+      if (profilesData.error) {
+        throw new Error(profilesData.error);
+      }
+
       const profiles = profilesData.profiles || [];
       profiles.forEach(profile => {
-        this.cache.profiles.set(profile.username, profile);
+        newProfiles.set(profile.username, profile);
       });
 
       // Fetch name mappings
       const namesResponse = await this._fetch(`${this.config.webAppUrl}?action=getNames`);
+
+      if (!namesResponse.ok) {
+        throw new Error(`HTTP ${namesResponse.status}: ${namesResponse.statusText}`);
+      }
+
       const namesData = await namesResponse.json();
+
+      if (namesData.error) {
+        throw new Error(namesData.error);
+      }
 
       console.log('[SheetsSync] Names response:', namesData);
 
-      this.cache.names.clear();
       const names = namesData.names || [];
       console.log(`[SheetsSync] Processing ${names.length} name mappings...`);
       names.forEach(nameRecord => {
         if (nameRecord.username) {
           const normalizedUsername = nameRecord.username.toLowerCase();
-          this.cache.names.set(normalizedUsername, nameRecord.realName);
+          newNames.set(normalizedUsername, nameRecord.realName);
           console.log(`[SheetsSync] Cached name: "${normalizedUsername}" -> "${nameRecord.realName}"`);
         }
       });
+
+      // All fetches succeeded — atomically swap caches
+      this.cache.downloads = newDownloads;
+      this.cache.profiles = newProfiles;
+      this.cache.names = newNames;
 
       // Update timestamps
       this.cache.lastFetched = Date.now();
@@ -329,6 +359,10 @@ const SheetsSync = {
         })
       });
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const result = await response.json();
 
       if (result.success) {
@@ -369,6 +403,10 @@ const SheetsSync = {
           realName: realName.trim()
         })
       });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
 
       const result = await response.json();
 
@@ -434,6 +472,10 @@ const SheetsSync = {
         body: JSON.stringify(record)
       });
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const result = await response.json();
 
       if (result.success && result.added) {
@@ -491,6 +533,10 @@ const SheetsSync = {
         })
       });
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const result = await response.json();
 
       if (result.success) {
@@ -535,17 +581,26 @@ const SheetsSync = {
         })
       });
 
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       const result = await response.json();
 
       if (result.success) {
         // Refresh profile cache
         const profilesResponse = await this._fetch(`${this.config.webAppUrl}?action=getProfiles`);
-        const profilesData = await profilesResponse.json();
 
-        this.cache.profiles.clear();
-        (profilesData.profiles || []).forEach(profile => {
-          this.cache.profiles.set(profile.username, profile);
-        });
+        if (profilesResponse.ok) {
+          const profilesData = await profilesResponse.json();
+          if (!profilesData.error) {
+            const newProfiles = new Map();
+            (profilesData.profiles || []).forEach(profile => {
+              newProfiles.set(profile.username, profile);
+            });
+            this.cache.profiles = newProfiles;
+          }
+        }
       }
 
       return result;

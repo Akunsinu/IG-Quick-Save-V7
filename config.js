@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.3.2',
-  VERSION_NAME: 'V8.3.2 - Security, Stability & Performance',
-  RELEASE_DATE: '2026-03-02',
+  VERSION: '8.3.3',
+  VERSION_NAME: 'V8.3.3 - Fix Google Sheets Sync Reliability',
+  RELEASE_DATE: '2026-03-23',
 
   // ============================================================================
   // TIMING & DELAYS
