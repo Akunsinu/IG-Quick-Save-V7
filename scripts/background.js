@@ -1846,6 +1846,7 @@ chrome.runtime.onConnect.addListener((port) => {
           await downloadHTML(htmlContent, htmlFilename, false);
 
           // Capture Instagram-style screenshot
+          let screenshotFailed = false;
           try {
             broadcastToUI({
               type: 'progress',
@@ -1878,45 +1879,29 @@ chrome.runtime.onConnect.addListener((port) => {
                 console.warn('[Background] Could not fetch media for screenshot');
               }
             }
-
-            // Mark as downloaded with full post info for Sheets sync
-            const shortcode = postInfo.shortcode;
-            if (shortcode) {
-              const enrichedPostInfo = {
-                ...postInfo,
-                // Ensure post_type is lowercase (fallback to 'post')
-                post_type: postInfo.post_type || 'post',
-                media_count: currentData.media?.media?.length || 0,
-                comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
-              };
-              await markAsDownloaded(shortcode, enrichedPostInfo);
-            }
-
-            port.postMessage({
-              type: 'success',
-              message: 'Downloaded all content successfully!'
-            });
           } catch (error) {
             console.error('[Background] Screenshot error:', error);
-
-            // Still mark as downloaded even if screenshot failed
-            const shortcode = postInfo.shortcode;
-            if (shortcode) {
-              const enrichedPostInfo = {
-                ...postInfo,
-                // Ensure post_type is lowercase (fallback to 'post')
-                post_type: postInfo.post_type || 'post',
-                media_count: currentData.media?.media?.length || 0,
-                comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
-              };
-              await markAsDownloaded(shortcode, enrichedPostInfo);
-            }
-
-            port.postMessage({
-              type: 'success',
-              message: 'Downloaded all content (screenshot failed)'
-            });
+            screenshotFailed = true;
           }
+
+          // Mark as downloaded once, regardless of screenshot outcome
+          const shortcode = postInfo.shortcode;
+          if (shortcode) {
+            const enrichedPostInfo = {
+              ...postInfo,
+              post_type: postInfo.post_type || 'post',
+              media_count: currentData.media?.media?.length || 0,
+              comment_count: currentData.comments?.total || currentData.comments?.comments?.length || 0
+            };
+            await markAsDownloaded(shortcode, enrichedPostInfo);
+          }
+
+          port.postMessage({
+            type: 'success',
+            message: screenshotFailed
+              ? 'Downloaded all content (screenshot failed)'
+              : 'Downloaded all content successfully!'
+          });
         } else if (msg.action === 'startBatch') {
           // Start batch processing
           const { urls, skipDownloaded, profileUsername, skipSources } = msg.data;

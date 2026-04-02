@@ -4,20 +4,16 @@
  *
  * SETUP INSTRUCTIONS:
  *
- * 1. Create a new Google Sheet
- * 2. Add three sheets (tabs):
- *    - "Downloads" with headers: timestamp, shortcode, url, real_name, username, post_type, media_count, comment_count, caption, downloader, post_date, collaborators
- *    - "Profiles" with headers: username, total_posts, downloaded_count, completion_pct, last_updated
- *    - "Names" with headers: real_name, username (maps Instagram usernames to real names for file naming)
- * 3. Go to Extensions > Apps Script
- * 4. Delete any existing code and paste this entire file
- * 5. Update SPREADSHEET_ID below with your Google Sheet ID (from the URL)
- * 6. Click Deploy > New Deployment
- * 7. Select type: Web app
- * 8. Set Execute as: Me
- * 9. Set Who has access: Anyone
- * 10. Click Deploy and copy the Web App URL
- * 11. Paste that URL into the extension's Team Sync settings
+ * 1. Create a new Google Sheet (sheets and headers are auto-created on first use)
+ * 2. Go to Extensions > Apps Script
+ * 3. Delete any existing code and paste this entire file
+ * 4. Update SPREADSHEET_ID below with your Google Sheet ID (from the URL)
+ * 5. Click Deploy > New Deployment
+ * 6. Select type: Web app
+ * 7. Set Execute as: Me
+ * 8. Set Who has access: Anyone
+ * 9. Click Deploy and copy the Web App URL
+ * 10. Paste that URL into the extension's Team Sync settings
  *
  * Your Sheet ID is in the URL: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit
  */
@@ -29,6 +25,80 @@ const SPREADSHEET_ID = '1OfKy8Zux_Imv1YC6vCDcwsSFMqUyXnDhwkM2QIoTv6Y';  // <-- R
 const DOWNLOADS_SHEET = 'Downloads';
 const PROFILES_SHEET = 'Profiles';
 const NAMES_SHEET = 'Names';
+
+// Canonical header definitions — used by auto-creation and validation
+const DOWNLOADS_HEADERS = ['timestamp', 'shortcode', 'url', 'real_name', 'username', 'post_type', 'media_count', 'comment_count', 'caption', 'downloader', 'post_date', 'collaborators'];
+const PROFILES_HEADERS = ['username', 'total_posts', 'downloaded_count', 'completion_pct', 'last_updated'];
+
+// ============================================================
+// SHEET CREATION & VALIDATION HELPERS
+// ============================================================
+
+/**
+ * Get or create the Downloads sheet with correct headers.
+ * Validates and repairs header row if it doesn't match the expected columns.
+ */
+function getOrCreateDownloadsSheet(ss) {
+  let sheet = ss.getSheetByName(DOWNLOADS_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(DOWNLOADS_SHEET);
+    sheet.appendRow(DOWNLOADS_HEADERS);
+    sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
+  } else {
+    // Validate header row matches expected columns
+    const lastCol = sheet.getLastColumn();
+    if (lastCol > 0) {
+      const currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      if (!headersMatch(currentHeaders, DOWNLOADS_HEADERS)) {
+        // Overwrite header row with correct headers
+        sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setValues([DOWNLOADS_HEADERS]);
+        sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
+      }
+    } else {
+      // Sheet exists but is empty — write headers
+      sheet.appendRow(DOWNLOADS_HEADERS);
+      sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
+    }
+  }
+  return sheet;
+}
+
+/**
+ * Get or create the Profiles sheet with correct headers.
+ */
+function getOrCreateProfilesSheet(ss) {
+  let sheet = ss.getSheetByName(PROFILES_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(PROFILES_SHEET);
+    sheet.appendRow(PROFILES_HEADERS);
+    sheet.getRange(1, 1, 1, PROFILES_HEADERS.length).setFontWeight('bold');
+  } else {
+    const lastCol = sheet.getLastColumn();
+    if (lastCol > 0) {
+      const currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      if (!headersMatch(currentHeaders, PROFILES_HEADERS)) {
+        sheet.getRange(1, 1, 1, PROFILES_HEADERS.length).setValues([PROFILES_HEADERS]);
+        sheet.getRange(1, 1, 1, PROFILES_HEADERS.length).setFontWeight('bold');
+      }
+    } else {
+      sheet.appendRow(PROFILES_HEADERS);
+      sheet.getRange(1, 1, 1, PROFILES_HEADERS.length).setFontWeight('bold');
+    }
+  }
+  return sheet;
+}
+
+/**
+ * Check if the first N headers match the expected headers (case-insensitive, trimmed).
+ */
+function headersMatch(current, expected) {
+  for (let i = 0; i < expected.length; i++) {
+    if (String(current[i] || '').trim().toLowerCase() !== expected[i].toLowerCase()) {
+      return false;
+    }
+  }
+  return true;
+}
 
 // ============================================================
 // GET HANDLER - Read data
@@ -127,10 +197,7 @@ function doPost(e) {
  * Get all downloads from the sheet
  */
 function getAllDownloads(ss) {
-  const sheet = ss.getSheetByName(DOWNLOADS_SHEET);
-  if (!sheet) {
-    return { downloads: [], count: 0, error: 'Downloads sheet not found' };
-  }
+  const sheet = getOrCreateDownloadsSheet(ss);
 
   const data = sheet.getDataRange().getValues();
 
@@ -158,10 +225,7 @@ function getAllDownloads(ss) {
  * Get profile statistics
  */
 function getProfileStats(ss) {
-  const sheet = ss.getSheetByName(PROFILES_SHEET);
-  if (!sheet) {
-    return { profiles: [], error: 'Profiles sheet not found' };
-  }
+  const sheet = getOrCreateProfilesSheet(ss);
 
   const data = sheet.getDataRange().getValues();
 
@@ -185,10 +249,7 @@ function getProfileStats(ss) {
  * Check if specific shortcodes are already downloaded
  */
 function checkIfDownloaded(ss, shortcodes) {
-  const sheet = ss.getSheetByName(DOWNLOADS_SHEET);
-  if (!sheet) {
-    return { results: {}, error: 'Downloads sheet not found' };
-  }
+  const sheet = getOrCreateDownloadsSheet(ss);
 
   const data = sheet.getDataRange().getValues();
 
@@ -218,10 +279,7 @@ function checkIfDownloaded(ss, shortcodes) {
  * Add a single download record
  */
 function addDownload(ss, data) {
-  const sheet = ss.getSheetByName(DOWNLOADS_SHEET);
-  if (!sheet) {
-    return { success: false, error: 'Downloads sheet not found' };
-  }
+  const sheet = getOrCreateDownloadsSheet(ss);
 
   // Check for duplicate
   const existingData = sheet.getDataRange().getValues();
@@ -264,10 +322,7 @@ function addDownload(ss, data) {
  * Add multiple downloads (batch) - more efficient for bulk operations
  */
 function addBatchDownloads(ss, downloads) {
-  const sheet = ss.getSheetByName(DOWNLOADS_SHEET);
-  if (!sheet) {
-    return { success: false, error: 'Downloads sheet not found' };
-  }
+  const sheet = getOrCreateDownloadsSheet(ss);
 
   let added = 0;
   let duplicates = 0;
@@ -332,10 +387,7 @@ function addBatchDownloads(ss, downloads) {
  * Update total posts for a profile (manually set by user)
  */
 function updateProfileTotal(ss, username, totalPosts) {
-  const sheet = ss.getSheetByName(PROFILES_SHEET);
-  if (!sheet) {
-    return { success: false, error: 'Profiles sheet not found' };
-  }
+  const sheet = getOrCreateProfilesSheet(ss);
 
   const data = sheet.getDataRange().getValues();
   const headers = data[0];
@@ -373,10 +425,8 @@ function updateProfileTotal(ss, username, totalPosts) {
 function updateProfileStatsForUser(ss, username) {
   if (!username) return;
 
-  const downloadsSheet = ss.getSheetByName(DOWNLOADS_SHEET);
-  const profilesSheet = ss.getSheetByName(PROFILES_SHEET);
-
-  if (!downloadsSheet || !profilesSheet) return;
+  const downloadsSheet = getOrCreateDownloadsSheet(ss);
+  const profilesSheet = getOrCreateProfilesSheet(ss);
 
   // Count downloads for this user
   const downloadsData = downloadsSheet.getDataRange().getValues();
@@ -562,6 +612,93 @@ function updateNameMapping(ss, username, realName) {
     username: normalizedUsername,
     realName: realName.trim()
   };
+}
+
+// ============================================================
+// ONE-TIME MIGRATION (run manually from Apps Script editor)
+// ============================================================
+
+/**
+ * Repairs the Downloads sheet by:
+ * 1. Detecting and fixing rows with an extra empty column B (from column-insert migration)
+ * 2. Removing duplicate rows (keeps first occurrence by shortcode)
+ * 3. Ensuring correct headers
+ *
+ * Run ONCE from the Apps Script editor: Run > repairDownloadsData
+ */
+function repairDownloadsData() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(DOWNLOADS_SHEET);
+  if (!sheet) {
+    Logger.log('No Downloads sheet found');
+    return;
+  }
+
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) {
+    Logger.log('No data rows to repair');
+    return;
+  }
+
+  let fixedRows = 0;
+  let duplicatesRemoved = 0;
+  const seen = new Set();
+  const cleanedRows = [];
+
+  // Process each data row (skip header at index 0)
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+
+    // Detect old-format rows: empty column B (index 1) with shortcode-like value in column C (index 2)
+    // Old format: [timestamp, '', shortcode, url, real_name, username, ...]
+    // New format: [timestamp, shortcode, url, real_name, username, ...]
+    let fixedRow;
+    const colB = String(row[1] || '').trim();
+    const colC = String(row[2] || '').trim();
+
+    if (colB === '' && colC !== '' && !colC.startsWith('http')) {
+      // Old format: remove the empty cell at index 1 to shift data left
+      fixedRow = [row[0], ...row.slice(2)];
+      // Pad to 12 columns if needed (old data may have fewer columns)
+      while (fixedRow.length < DOWNLOADS_HEADERS.length) {
+        fixedRow.push('');
+      }
+      // Trim to 12 columns if there are extras
+      fixedRow = fixedRow.slice(0, DOWNLOADS_HEADERS.length);
+      fixedRows++;
+    } else {
+      // New format or unknown: keep as-is, trim/pad to 12 columns
+      fixedRow = row.slice(0, DOWNLOADS_HEADERS.length);
+      while (fixedRow.length < DOWNLOADS_HEADERS.length) {
+        fixedRow.push('');
+      }
+    }
+
+    // Deduplicate by shortcode (index 1 after fix)
+    const shortcode = String(fixedRow[1] || '').trim();
+    if (shortcode && seen.has(shortcode)) {
+      duplicatesRemoved++;
+      continue;
+    }
+    if (shortcode) {
+      seen.add(shortcode);
+    }
+
+    cleanedRows.push(fixedRow);
+  }
+
+  // Clear the sheet and rewrite with correct headers + cleaned data
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setValues([DOWNLOADS_HEADERS]);
+  sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
+
+  if (cleanedRows.length > 0) {
+    sheet.getRange(2, 1, cleanedRows.length, DOWNLOADS_HEADERS.length).setValues(cleanedRows);
+  }
+
+  const msg = `Repair complete. Fixed ${fixedRows} shifted rows, removed ${duplicatesRemoved} duplicates. ${cleanedRows.length} rows remaining.`;
+  Logger.log(msg);
+  return msg;
 }
 
 // ============================================================
