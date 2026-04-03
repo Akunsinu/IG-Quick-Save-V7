@@ -89,6 +89,18 @@ function getOrCreateProfilesSheet(ss) {
 }
 
 /**
+ * Read sheet data with bounded columns to avoid exceeding Apps Script size limits.
+ * Use instead of sheet.getDataRange().getValues() for sheets with user-added columns or large captions.
+ */
+function getBoundedData(sheet, maxCols) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow === 0) return [];
+  const cols = Math.min(maxCols || sheet.getLastColumn(), sheet.getLastColumn());
+  if (cols === 0) return [];
+  return sheet.getRange(1, 1, lastRow, cols).getValues();
+}
+
+/**
  * Check if the first N headers match the expected headers (case-insensitive, trimmed).
  */
 function headersMatch(current, expected) {
@@ -199,7 +211,7 @@ function doPost(e) {
 function getAllDownloads(ss) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  const data = sheet.getDataRange().getValues();
+  const data = getBoundedData(sheet, DOWNLOADS_HEADERS.length);
 
   if (data.length <= 1) {
     return { downloads: [], count: 0 };
@@ -251,7 +263,7 @@ function getProfileStats(ss) {
 function checkIfDownloaded(ss, shortcodes) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  const data = sheet.getDataRange().getValues();
+  const data = getBoundedData(sheet, DOWNLOADS_HEADERS.length);
 
   const downloadedSet = new Set();
   const headers = data[0];
@@ -281,14 +293,12 @@ function checkIfDownloaded(ss, shortcodes) {
 function addDownload(ss, data) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  // Check for duplicate
-  const existingData = sheet.getDataRange().getValues();
-  const headers = existingData[0];
-  const shortcodeCol = headers.indexOf('shortcode');
-
-  if (shortcodeCol >= 0) {
-    for (let i = 1; i < existingData.length; i++) {
-      if (existingData[i][shortcodeCol] === data.shortcode) {
+  // Check for duplicate — only read shortcode column (index 1) to avoid size limits
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    const shortcodes = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // column B = shortcode
+    for (let i = 0; i < shortcodes.length; i++) {
+      if (shortcodes[i][0] === data.shortcode) {
         return { success: true, duplicate: true, message: 'Already tracked' };
       }
     }
@@ -327,15 +337,13 @@ function addBatchDownloads(ss, downloads) {
   let added = 0;
   let duplicates = 0;
 
-  // Get existing shortcodes
-  const existingData = sheet.getDataRange().getValues();
-  const headers = existingData[0];
-  const shortcodeCol = headers.indexOf('shortcode');
+  // Get existing shortcodes — only read column B to avoid size limits
   const existingShortcodes = new Set();
-
-  if (shortcodeCol >= 0) {
-    existingData.slice(1).forEach(row => {
-      existingShortcodes.add(row[shortcodeCol]);
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    const shortcodes = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // column B = shortcode
+    shortcodes.forEach(row => {
+      existingShortcodes.add(row[0]);
     });
   }
 
@@ -428,17 +436,13 @@ function updateProfileStatsForUser(ss, username) {
   const downloadsSheet = getOrCreateDownloadsSheet(ss);
   const profilesSheet = getOrCreateProfilesSheet(ss);
 
-  // Count downloads for this user
-  const downloadsData = downloadsSheet.getDataRange().getValues();
-  const downloadsHeaders = downloadsData[0];
-  const usernameCol = downloadsHeaders.indexOf('username');
-
+  // Count downloads for this user — only read username column (E = index 5) to avoid size limits
   let downloadedCount = 0;
-  if (usernameCol >= 0) {
-    downloadsData.slice(1).forEach(row => {
-      if (row[usernameCol] === username) {
-        downloadedCount++;
-      }
+  const dlLastRow = downloadsSheet.getLastRow();
+  if (dlLastRow > 1) {
+    const usernames = downloadsSheet.getRange(2, 5, dlLastRow - 1, 1).getValues(); // column E = username
+    usernames.forEach(row => {
+      if (row[0] === username) downloadedCount++;
     });
   }
 
@@ -640,66 +644,71 @@ function repairDownloadsData() {
     return;
   }
 
-  // Only read columns A through M (13 cols) — enough for 12 expected + 1 extra for shifted data
-  // This avoids loading user-added columns (manual notes, DB Link, etc.) that can exceed size limits
-  const readCols = DOWNLOADS_HEADERS.length + 1; // 13
-  const data = sheet.getRange(1, 1, lastRow, readCols).getValues();
+  // Read and process in chunks to avoid exceeding Apps Script size limits
+  // (large captions across thousands of rows can blow the limit)
+  const READ_BATCH = 300;
+  const readCols = DOWNLOADS_HEADERS.length + 1; // 13 cols: 12 expected + 1 for shifted data
 
   let fixedRows = 0;
   let duplicatesRemoved = 0;
   const seen = new Set();
   const cleanedRows = [];
 
-  // Process each data row (skip header at index 0)
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
+  for (let startRow = 2; startRow <= lastRow; startRow += READ_BATCH) {
+    const numRows = Math.min(READ_BATCH, lastRow - startRow + 1);
+    const chunk = sheet.getRange(startRow, 1, numRows, readCols).getValues();
 
-    // Skip completely empty rows
-    if (row.every(cell => String(cell || '').trim() === '')) continue;
+    for (let i = 0; i < chunk.length; i++) {
+      const row = chunk[i];
 
-    // Detect old-format rows: empty column B (index 1) with shortcode-like value in column C (index 2)
-    // Old format: [timestamp, '', shortcode, url, real_name, username, ...]
-    // New format: [timestamp, shortcode, url, real_name, username, ...]
-    let fixedRow;
-    const colB = String(row[1] || '').trim();
-    const colC = String(row[2] || '').trim();
+      // Skip completely empty rows
+      if (row.every(cell => String(cell || '').trim() === '')) continue;
 
-    if (colB === '' && colC !== '' && !colC.startsWith('http')) {
-      // Old format: remove the empty cell at index 1 to shift data left
-      fixedRow = [row[0], ...row.slice(2)];
-      fixedRows++;
-    } else {
-      fixedRow = row.slice();
+      // Detect old-format rows: empty column B with shortcode-like value in column C
+      let fixedRow;
+      const colB = String(row[1] || '').trim();
+      const colC = String(row[2] || '').trim();
+
+      if (colB === '' && colC !== '' && !colC.startsWith('http')) {
+        fixedRow = [row[0], ...row.slice(2)];
+        fixedRows++;
+      } else {
+        fixedRow = row.slice();
+      }
+
+      // Pad/trim to 12 columns
+      while (fixedRow.length < DOWNLOADS_HEADERS.length) fixedRow.push('');
+      fixedRow = fixedRow.slice(0, DOWNLOADS_HEADERS.length);
+
+      // Deduplicate by shortcode (index 1 after fix)
+      const shortcode = String(fixedRow[1] || '').trim();
+      if (shortcode && seen.has(shortcode)) {
+        duplicatesRemoved++;
+        continue;
+      }
+      if (shortcode) seen.add(shortcode);
+
+      cleanedRows.push(fixedRow);
     }
 
-    // Pad to 12 columns if needed, trim to 12
-    while (fixedRow.length < DOWNLOADS_HEADERS.length) fixedRow.push('');
-    fixedRow = fixedRow.slice(0, DOWNLOADS_HEADERS.length);
-
-    // Deduplicate by shortcode (index 1 after fix)
-    const shortcode = String(fixedRow[1] || '').trim();
-    if (shortcode && seen.has(shortcode)) {
-      duplicatesRemoved++;
-      continue;
-    }
-    if (shortcode) {
-      seen.add(shortcode);
-    }
-
-    cleanedRows.push(fixedRow);
+    Logger.log('Processed rows ' + startRow + ' to ' + (startRow + numRows - 1));
   }
 
-  // Clear only the columns we manage (A through L) — preserve user columns to the right
-  sheet.getRange(1, 1, lastRow, readCols).clearContent();
+  // Clear only the columns we manage — preserve user columns to the right
+  // Clear in chunks too
+  for (let startRow = 1; startRow <= lastRow; startRow += READ_BATCH) {
+    const numRows = Math.min(READ_BATCH, lastRow - startRow + 1);
+    sheet.getRange(startRow, 1, numRows, readCols).clearContent();
+  }
 
   // Write correct headers
   sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setValues([DOWNLOADS_HEADERS]);
   sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
 
-  // Write cleaned data in batches of 500 to avoid size limits
-  const BATCH_SIZE = 500;
-  for (let i = 0; i < cleanedRows.length; i += BATCH_SIZE) {
-    const batch = cleanedRows.slice(i, i + BATCH_SIZE);
+  // Write cleaned data in batches
+  const WRITE_BATCH = 300;
+  for (let i = 0; i < cleanedRows.length; i += WRITE_BATCH) {
+    const batch = cleanedRows.slice(i, i + WRITE_BATCH);
     sheet.getRange(i + 2, 1, batch.length, DOWNLOADS_HEADERS.length).setValues(batch);
   }
 
