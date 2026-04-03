@@ -89,18 +89,6 @@ function getOrCreateProfilesSheet(ss) {
 }
 
 /**
- * Read sheet data with bounded columns to avoid exceeding Apps Script size limits.
- * Use instead of sheet.getDataRange().getValues() for sheets with user-added columns or large captions.
- */
-function getBoundedData(sheet, maxCols) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow === 0) return [];
-  const cols = Math.min(maxCols || sheet.getLastColumn(), sheet.getLastColumn());
-  if (cols === 0) return [];
-  return sheet.getRange(1, 1, lastRow, cols).getValues();
-}
-
-/**
  * Check if the first N headers match the expected headers (case-insensitive, trimmed).
  */
 function headersMatch(current, expected) {
@@ -216,31 +204,22 @@ function getAllDownloads(ss) {
     return { downloads: [], count: 0 };
   }
 
-  // Read only the columns the extension needs for caching: skip caption (col 9) which is large.
-  // Columns: A=timestamp(1), B=shortcode(2), C=url(3), D=real_name(4), E=username(5),
-  //          F=post_type(6), G=media_count(7), H=comment_count(8), J=downloader(10),
-  //          K=post_date(11), L=collaborators(12)
-  // Read cols 1-8 and 10-12 separately to skip col 9 (caption)
-  const leftData = sheet.getRange(2, 1, lastRow - 1, 8).getValues();   // cols A-H
-  const rightData = sheet.getRange(2, 10, lastRow - 1, 3).getValues(); // cols J-L
+  const numRows = lastRow - 1;
+
+  // Read only the 3 columns the extension cache actually uses.
+  // This avoids the "data exceeds maximum size" error on large sheets.
+  const shortcodes   = sheet.getRange(2, 2, numRows, 1).getValues();  // col B = shortcode
+  const usernames    = sheet.getRange(2, 5, numRows, 1).getValues();  // col E = username
+  const downloaders  = sheet.getRange(2, 10, numRows, 1).getValues(); // col J = downloader
 
   const downloads = [];
-  for (let i = 0; i < leftData.length; i++) {
-    const left = leftData[i];
-    const right = rightData[i];
+  for (let i = 0; i < numRows; i++) {
+    const sc = shortcodes[i][0];
+    if (!sc) continue; // skip empty rows
     downloads.push({
-      timestamp: left[0],
-      shortcode: left[1],
-      url: left[2],
-      real_name: left[3],
-      username: left[4],
-      post_type: left[5],
-      media_count: left[6],
-      comment_count: left[7],
-      caption: '',  // omitted for performance — not used by extension cache
-      downloader: right[0],
-      post_date: right[1],
-      collaborators: right[2]
+      shortcode: sc,
+      username: usernames[i][0] || '',
+      downloader: downloaders[i][0] || ''
     });
   }
 
@@ -281,15 +260,12 @@ function getProfileStats(ss) {
 function checkIfDownloaded(ss, shortcodes) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  const data = getBoundedData(sheet, DOWNLOADS_HEADERS.length);
-
   const downloadedSet = new Set();
-  const headers = data[0];
-  const shortcodeCol = headers.indexOf('shortcode');
-
-  if (shortcodeCol >= 0) {
-    data.slice(1).forEach(row => {
-      downloadedSet.add(row[shortcodeCol]);
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    const data = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // col B = shortcode
+    data.forEach(row => {
+      if (row[0]) downloadedSet.add(row[0]);
     });
   }
 
