@@ -45,17 +45,14 @@ function getOrCreateDownloadsSheet(ss) {
     sheet.appendRow(DOWNLOADS_HEADERS);
     sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
   } else {
-    // Validate header row matches expected columns
     const lastCol = sheet.getLastColumn();
     if (lastCol > 0) {
-      const currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      const currentHeaders = sheet.getRange(1, 1, 1, Math.min(lastCol, DOWNLOADS_HEADERS.length)).getValues()[0];
       if (!headersMatch(currentHeaders, DOWNLOADS_HEADERS)) {
-        // Overwrite header row with correct headers
         sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setValues([DOWNLOADS_HEADERS]);
         sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
       }
     } else {
-      // Sheet exists but is empty — write headers
       sheet.appendRow(DOWNLOADS_HEADERS);
       sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
     }
@@ -75,7 +72,7 @@ function getOrCreateProfilesSheet(ss) {
   } else {
     const lastCol = sheet.getLastColumn();
     if (lastCol > 0) {
-      const currentHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      const currentHeaders = sheet.getRange(1, 1, 1, Math.min(lastCol, PROFILES_HEADERS.length)).getValues()[0];
       if (!headersMatch(currentHeaders, PROFILES_HEADERS)) {
         sheet.getRange(1, 1, 1, PROFILES_HEADERS.length).setValues([PROFILES_HEADERS]);
         sheet.getRange(1, 1, 1, PROFILES_HEADERS.length).setFontWeight('bold');
@@ -199,29 +196,20 @@ function doPost(e) {
 function getAllDownloads(ss) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  const lastRow = sheet.getLastRow();
-  if (lastRow <= 1) {
+  const data = sheet.getDataRange().getValues();
+
+  if (data.length <= 1) {
     return { downloads: [], count: 0 };
   }
 
-  const numRows = lastRow - 1;
-
-  // Read only the 3 columns the extension cache actually uses.
-  // This avoids the "data exceeds maximum size" error on large sheets.
-  const shortcodes   = sheet.getRange(2, 2, numRows, 1).getValues();  // col B = shortcode
-  const usernames    = sheet.getRange(2, 5, numRows, 1).getValues();  // col E = username
-  const downloaders  = sheet.getRange(2, 10, numRows, 1).getValues(); // col J = downloader
-
-  const downloads = [];
-  for (let i = 0; i < numRows; i++) {
-    const sc = shortcodes[i][0];
-    if (!sc) continue; // skip empty rows
-    downloads.push({
-      shortcode: sc,
-      username: usernames[i][0] || '',
-      downloader: downloaders[i][0] || ''
+  const headers = data[0];
+  const downloads = data.slice(1).map(row => {
+    const obj = {};
+    headers.forEach((header, i) => {
+      obj[header] = row[i];
     });
-  }
+    return obj;
+  });
 
   return {
     downloads,
@@ -260,12 +248,15 @@ function getProfileStats(ss) {
 function checkIfDownloaded(ss, shortcodes) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
+  const data = sheet.getDataRange().getValues();
+
   const downloadedSet = new Set();
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    const data = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // col B = shortcode
-    data.forEach(row => {
-      if (row[0]) downloadedSet.add(row[0]);
+  const headers = data[0];
+  const shortcodeCol = headers.indexOf('shortcode');
+
+  if (shortcodeCol >= 0) {
+    data.slice(1).forEach(row => {
+      downloadedSet.add(row[shortcodeCol]);
     });
   }
 
@@ -287,12 +278,14 @@ function checkIfDownloaded(ss, shortcodes) {
 function addDownload(ss, data) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  // Check for duplicate — only read shortcode column (index 1) to avoid size limits
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    const shortcodes = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // column B = shortcode
-    for (let i = 0; i < shortcodes.length; i++) {
-      if (shortcodes[i][0] === data.shortcode) {
+  // Check for duplicate
+  const existingData = sheet.getDataRange().getValues();
+  const headers = existingData[0];
+  const shortcodeCol = headers.indexOf('shortcode');
+
+  if (shortcodeCol >= 0) {
+    for (let i = 1; i < existingData.length; i++) {
+      if (existingData[i][shortcodeCol] === data.shortcode) {
         return { success: true, duplicate: true, message: 'Already tracked' };
       }
     }
@@ -331,13 +324,15 @@ function addBatchDownloads(ss, downloads) {
   let added = 0;
   let duplicates = 0;
 
-  // Get existing shortcodes — only read column B to avoid size limits
+  // Get existing shortcodes
+  const existingData = sheet.getDataRange().getValues();
+  const headers = existingData[0];
+  const shortcodeCol = headers.indexOf('shortcode');
   const existingShortcodes = new Set();
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    const shortcodes = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // column B = shortcode
-    shortcodes.forEach(row => {
-      existingShortcodes.add(row[0]);
+
+  if (shortcodeCol >= 0) {
+    existingData.slice(1).forEach(row => {
+      existingShortcodes.add(row[shortcodeCol]);
     });
   }
 
@@ -430,13 +425,17 @@ function updateProfileStatsForUser(ss, username) {
   const downloadsSheet = getOrCreateDownloadsSheet(ss);
   const profilesSheet = getOrCreateProfilesSheet(ss);
 
-  // Count downloads for this user — only read username column (E = index 5) to avoid size limits
+  // Count downloads for this user
+  const downloadsData = downloadsSheet.getDataRange().getValues();
+  const downloadsHeaders = downloadsData[0];
+  const usernameCol = downloadsHeaders.indexOf('username');
+
   let downloadedCount = 0;
-  const dlLastRow = downloadsSheet.getLastRow();
-  if (dlLastRow > 1) {
-    const usernames = downloadsSheet.getRange(2, 5, dlLastRow - 1, 1).getValues(); // column E = username
-    usernames.forEach(row => {
-      if (row[0] === username) downloadedCount++;
+  if (usernameCol >= 0) {
+    downloadsData.slice(1).forEach(row => {
+      if (row[usernameCol] === username) {
+        downloadedCount++;
+      }
     });
   }
 
@@ -613,52 +612,57 @@ function updateNameMapping(ss, username, realName) {
 }
 
 // ============================================================
-// ONE-TIME MIGRATION (run manually from Apps Script editor)
+// ONE-TIME SHEET REPAIR (run manually from Apps Script editor)
 // ============================================================
 
 /**
- * Repairs the Downloads sheet by:
- * 1. Detecting and fixing rows with an extra empty column B (from column-insert migration)
- * 2. Removing duplicate rows (keeps first occurrence by shortcode)
- * 3. Ensuring correct headers
+ * Fixes a Downloads sheet damaged by clearContent() (which leaves ghost rows).
+ * Creates a clean new sheet, copies only real data, then deletes the old sheet.
+ * This is the only reliable way to reset Google Sheets' internal state.
  *
- * Run ONCE from the Apps Script editor: Run > repairDownloadsData
+ * Run ONCE from the Apps Script editor: Run > compactSheet
  */
-function repairDownloadsData() {
+function compactSheet() {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  const sheet = ss.getSheetByName(DOWNLOADS_SHEET);
-  if (!sheet) {
+  const oldSheet = ss.getSheetByName(DOWNLOADS_SHEET);
+  if (!oldSheet) {
     Logger.log('No Downloads sheet found');
     return;
   }
 
-  const lastRow = sheet.getLastRow();
-  if (lastRow <= 1) {
-    Logger.log('No data rows to repair');
-    return;
-  }
+  // Create a fresh temporary sheet
+  const tempSheet = ss.insertSheet('Downloads_TEMP');
+  tempSheet.appendRow(DOWNLOADS_HEADERS);
+  tempSheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
 
-  // Read and process in chunks to avoid exceeding Apps Script size limits
-  // (large captions across thousands of rows can blow the limit)
-  const READ_BATCH = 300;
-  const readCols = DOWNLOADS_HEADERS.length + 1; // 13 cols: 12 expected + 1 for shifted data
+  // Read data from old sheet in small single-column chunks to find actual row count
+  // Read shortcode column (B) to determine which rows have real data
+  const maxRow = oldSheet.getMaxRows();
+  Logger.log('Old sheet maxRows: ' + maxRow + ', lastRow: ' + oldSheet.getLastRow());
 
-  let fixedRows = 0;
-  let duplicatesRemoved = 0;
+  const CHUNK = 500;
+  const allRows = [];
   const seen = new Set();
-  const cleanedRows = [];
+  let duplicates = 0;
+  let emptyRows = 0;
+  let fixedRows = 0;
 
-  for (let startRow = 2; startRow <= lastRow; startRow += READ_BATCH) {
-    const numRows = Math.min(READ_BATCH, lastRow - startRow + 1);
-    const chunk = sheet.getRange(startRow, 1, numRows, readCols).getValues();
+  for (let start = 2; start <= oldSheet.getLastRow(); start += CHUNK) {
+    const numRows = Math.min(CHUNK, oldSheet.getLastRow() - start + 1);
+    if (numRows <= 0) break;
+
+    // Read only columns A-M (13) for this chunk — enough for 12 + 1 shifted
+    const readCols = Math.min(DOWNLOADS_HEADERS.length + 1, oldSheet.getLastColumn());
+    const chunk = oldSheet.getRange(start, 1, numRows, readCols).getValues();
 
     for (let i = 0; i < chunk.length; i++) {
       const row = chunk[i];
 
-      // Skip completely empty rows
-      if (row.every(cell => String(cell || '').trim() === '')) continue;
+      // Skip empty rows
+      const hasContent = row.some(cell => String(cell || '').trim() !== '');
+      if (!hasContent) { emptyRows++; continue; }
 
-      // Detect old-format rows: empty column B with shortcode-like value in column C
+      // Detect shifted rows (empty col B, shortcode in col C)
       let fixedRow;
       const colB = String(row[1] || '').trim();
       const colC = String(row[2] || '').trim();
@@ -674,39 +678,34 @@ function repairDownloadsData() {
       while (fixedRow.length < DOWNLOADS_HEADERS.length) fixedRow.push('');
       fixedRow = fixedRow.slice(0, DOWNLOADS_HEADERS.length);
 
-      // Deduplicate by shortcode (index 1 after fix)
+      // Deduplicate
       const shortcode = String(fixedRow[1] || '').trim();
-      if (shortcode && seen.has(shortcode)) {
-        duplicatesRemoved++;
-        continue;
-      }
-      if (shortcode) seen.add(shortcode);
+      if (!shortcode) { emptyRows++; continue; }
+      if (seen.has(shortcode)) { duplicates++; continue; }
+      seen.add(shortcode);
 
-      cleanedRows.push(fixedRow);
+      allRows.push(fixedRow);
     }
 
-    Logger.log('Processed rows ' + startRow + ' to ' + (startRow + numRows - 1));
+    Logger.log('Read rows ' + start + '-' + (start + numRows - 1) + ', kept ' + allRows.length + ' so far');
   }
 
-  // Clear only the columns we manage — preserve user columns to the right
-  // Clear in chunks too
-  for (let startRow = 1; startRow <= lastRow; startRow += READ_BATCH) {
-    const numRows = Math.min(READ_BATCH, lastRow - startRow + 1);
-    sheet.getRange(startRow, 1, numRows, readCols).clearContent();
+  // Write all cleaned data to the temp sheet in batches
+  if (allRows.length > 0) {
+    const WRITE_BATCH = 500;
+    for (let i = 0; i < allRows.length; i += WRITE_BATCH) {
+      const batch = allRows.slice(i, i + WRITE_BATCH);
+      tempSheet.getRange(i + 2, 1, batch.length, DOWNLOADS_HEADERS.length).setValues(batch);
+    }
   }
 
-  // Write correct headers
-  sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setValues([DOWNLOADS_HEADERS]);
-  sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
+  // Delete the old broken sheet entirely (removes all ghost rows/formatting)
+  ss.deleteSheet(oldSheet);
 
-  // Write cleaned data in batches
-  const WRITE_BATCH = 300;
-  for (let i = 0; i < cleanedRows.length; i += WRITE_BATCH) {
-    const batch = cleanedRows.slice(i, i + WRITE_BATCH);
-    sheet.getRange(i + 2, 1, batch.length, DOWNLOADS_HEADERS.length).setValues(batch);
-  }
+  // Rename temp sheet to the correct name
+  tempSheet.setName(DOWNLOADS_SHEET);
 
-  const msg = `Repair complete. Fixed ${fixedRows} shifted rows, removed ${duplicatesRemoved} duplicates. ${cleanedRows.length} rows remaining.`;
+  const msg = 'Compact complete. ' + allRows.length + ' rows kept, ' + duplicates + ' duplicates removed, ' + fixedRows + ' shifted rows fixed, ' + emptyRows + ' empty rows removed.';
   Logger.log(msg);
   return msg;
 }
