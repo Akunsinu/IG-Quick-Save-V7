@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.3.3',
-  VERSION_NAME: 'V8.3.3 - Fix Google Sheets Sync Reliability',
-  RELEASE_DATE: '2026-03-23',
+  VERSION: '8.3.4',
+  VERSION_NAME: 'V8.3.4 - Fix Sheets Column Alignment & Duplicate Rows',
+  RELEASE_DATE: '2026-04-03',
 
   // ============================================================================
   // TIMING & DELAYS
