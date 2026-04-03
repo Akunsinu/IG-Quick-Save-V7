@@ -211,20 +211,38 @@ function doPost(e) {
 function getAllDownloads(ss) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  const data = getBoundedData(sheet, DOWNLOADS_HEADERS.length);
-
-  if (data.length <= 1) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) {
     return { downloads: [], count: 0 };
   }
 
-  const headers = data[0];
-  const downloads = data.slice(1).map(row => {
-    const obj = {};
-    headers.forEach((header, i) => {
-      obj[header] = row[i];
+  // Read only the columns the extension needs for caching: skip caption (col 9) which is large.
+  // Columns: A=timestamp(1), B=shortcode(2), C=url(3), D=real_name(4), E=username(5),
+  //          F=post_type(6), G=media_count(7), H=comment_count(8), J=downloader(10),
+  //          K=post_date(11), L=collaborators(12)
+  // Read cols 1-8 and 10-12 separately to skip col 9 (caption)
+  const leftData = sheet.getRange(2, 1, lastRow - 1, 8).getValues();   // cols A-H
+  const rightData = sheet.getRange(2, 10, lastRow - 1, 3).getValues(); // cols J-L
+
+  const downloads = [];
+  for (let i = 0; i < leftData.length; i++) {
+    const left = leftData[i];
+    const right = rightData[i];
+    downloads.push({
+      timestamp: left[0],
+      shortcode: left[1],
+      url: left[2],
+      real_name: left[3],
+      username: left[4],
+      post_type: left[5],
+      media_count: left[6],
+      comment_count: left[7],
+      caption: '',  // omitted for performance — not used by extension cache
+      downloader: right[0],
+      post_date: right[1],
+      collaborators: right[2]
     });
-    return obj;
-  });
+  }
 
   return {
     downloads,
