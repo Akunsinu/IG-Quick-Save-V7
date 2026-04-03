@@ -634,11 +634,16 @@ function repairDownloadsData() {
     return;
   }
 
-  const data = sheet.getDataRange().getValues();
-  if (data.length <= 1) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) {
     Logger.log('No data rows to repair');
     return;
   }
+
+  // Only read columns A through M (13 cols) — enough for 12 expected + 1 extra for shifted data
+  // This avoids loading user-added columns (manual notes, DB Link, etc.) that can exceed size limits
+  const readCols = DOWNLOADS_HEADERS.length + 1; // 13
+  const data = sheet.getRange(1, 1, lastRow, readCols).getValues();
 
   let fixedRows = 0;
   let duplicatesRemoved = 0;
@@ -648,6 +653,9 @@ function repairDownloadsData() {
   // Process each data row (skip header at index 0)
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
+
+    // Skip completely empty rows
+    if (row.every(cell => String(cell || '').trim() === '')) continue;
 
     // Detect old-format rows: empty column B (index 1) with shortcode-like value in column C (index 2)
     // Old format: [timestamp, '', shortcode, url, real_name, username, ...]
@@ -659,20 +667,14 @@ function repairDownloadsData() {
     if (colB === '' && colC !== '' && !colC.startsWith('http')) {
       // Old format: remove the empty cell at index 1 to shift data left
       fixedRow = [row[0], ...row.slice(2)];
-      // Pad to 12 columns if needed (old data may have fewer columns)
-      while (fixedRow.length < DOWNLOADS_HEADERS.length) {
-        fixedRow.push('');
-      }
-      // Trim to 12 columns if there are extras
-      fixedRow = fixedRow.slice(0, DOWNLOADS_HEADERS.length);
       fixedRows++;
     } else {
-      // New format or unknown: keep as-is, trim/pad to 12 columns
-      fixedRow = row.slice(0, DOWNLOADS_HEADERS.length);
-      while (fixedRow.length < DOWNLOADS_HEADERS.length) {
-        fixedRow.push('');
-      }
+      fixedRow = row.slice();
     }
+
+    // Pad to 12 columns if needed, trim to 12
+    while (fixedRow.length < DOWNLOADS_HEADERS.length) fixedRow.push('');
+    fixedRow = fixedRow.slice(0, DOWNLOADS_HEADERS.length);
 
     // Deduplicate by shortcode (index 1 after fix)
     const shortcode = String(fixedRow[1] || '').trim();
@@ -687,13 +689,18 @@ function repairDownloadsData() {
     cleanedRows.push(fixedRow);
   }
 
-  // Clear the sheet and rewrite with correct headers + cleaned data
-  sheet.clearContents();
+  // Clear only the columns we manage (A through L) — preserve user columns to the right
+  sheet.getRange(1, 1, lastRow, readCols).clearContent();
+
+  // Write correct headers
   sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setValues([DOWNLOADS_HEADERS]);
   sheet.getRange(1, 1, 1, DOWNLOADS_HEADERS.length).setFontWeight('bold');
 
-  if (cleanedRows.length > 0) {
-    sheet.getRange(2, 1, cleanedRows.length, DOWNLOADS_HEADERS.length).setValues(cleanedRows);
+  // Write cleaned data in batches of 500 to avoid size limits
+  const BATCH_SIZE = 500;
+  for (let i = 0; i < cleanedRows.length; i += BATCH_SIZE) {
+    const batch = cleanedRows.slice(i, i + BATCH_SIZE);
+    sheet.getRange(i + 2, 1, batch.length, DOWNLOADS_HEADERS.length).setValues(batch);
   }
 
   const msg = `Repair complete. Fixed ${fixedRows} shifted rows, removed ${duplicatesRemoved} duplicates. ${cleanedRows.length} rows remaining.`;
