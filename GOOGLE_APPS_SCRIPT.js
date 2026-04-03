@@ -196,20 +196,28 @@ function doPost(e) {
 function getAllDownloads(ss) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  const data = sheet.getDataRange().getValues();
-
-  if (data.length <= 1) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) {
     return { downloads: [], count: 0 };
   }
 
-  const headers = data[0];
-  const downloads = data.slice(1).map(row => {
-    const obj = {};
-    headers.forEach((header, i) => {
-      obj[header] = row[i];
+  // Read only the 3 columns the extension cache uses — avoids size limits
+  // caused by long captions and user-added columns (18 cols total on this sheet)
+  const numRows = lastRow - 1;
+  const shortcodes  = sheet.getRange(2, 2, numRows, 1).getValues();  // col B
+  const usernames   = sheet.getRange(2, 5, numRows, 1).getValues();  // col E
+  const downloaders = sheet.getRange(2, 10, numRows, 1).getValues(); // col J
+
+  const downloads = [];
+  for (let i = 0; i < numRows; i++) {
+    const sc = shortcodes[i][0];
+    if (!sc) continue;
+    downloads.push({
+      shortcode: sc,
+      username: usernames[i][0] || '',
+      downloader: downloaders[i][0] || ''
     });
-    return obj;
-  });
+  }
 
   return {
     downloads,
@@ -248,16 +256,11 @@ function getProfileStats(ss) {
 function checkIfDownloaded(ss, shortcodes) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  const data = sheet.getDataRange().getValues();
-
   const downloadedSet = new Set();
-  const headers = data[0];
-  const shortcodeCol = headers.indexOf('shortcode');
-
-  if (shortcodeCol >= 0) {
-    data.slice(1).forEach(row => {
-      downloadedSet.add(row[shortcodeCol]);
-    });
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    const data = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // col B only
+    data.forEach(row => { if (row[0]) downloadedSet.add(row[0]); });
   }
 
   const results = {};
