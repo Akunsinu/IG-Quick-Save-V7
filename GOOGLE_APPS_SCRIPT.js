@@ -95,6 +95,23 @@ function headersMatch(current, expected) {
   return true;
 }
 
+/**
+ * Read a single column in chunks to avoid size limits on large sheets (13,000+ rows).
+ * Returns a flat array of values.
+ */
+function readColumnChunked(sheet, col, startRow, lastRow) {
+  const CHUNK = 2000;
+  const values = [];
+  for (let start = startRow; start <= lastRow; start += CHUNK) {
+    const numRows = Math.min(CHUNK, lastRow - start + 1);
+    const chunk = sheet.getRange(start, col, numRows, 1).getValues();
+    for (let i = 0; i < chunk.length; i++) {
+      values.push(chunk[i][0]);
+    }
+  }
+  return values;
+}
+
 // ============================================================
 // GET HANDLER - Read data
 // ============================================================
@@ -199,22 +216,26 @@ function getAllDownloads(ss) {
     return { downloads: [], count: 0 };
   }
 
-  // Read only the 3 columns the extension cache uses — avoids size limits
-  // caused by long captions and user-added columns (18 cols total on this sheet)
-  const numRows = lastRow - 1;
-  const shortcodes  = sheet.getRange(2, 2, numRows, 1).getValues();  // col B
-  const usernames   = sheet.getRange(2, 5, numRows, 1).getValues();  // col E
-  const downloaders = sheet.getRange(2, 10, numRows, 1).getValues(); // col J
-
+  // Sheet has 13,000+ rows — read in chunks to avoid size limits
+  const CHUNK = 2000;
   const downloads = [];
-  for (let i = 0; i < numRows; i++) {
-    const sc = shortcodes[i][0];
-    if (!sc) continue;
-    downloads.push({
-      shortcode: sc,
-      username: usernames[i][0] || '',
-      downloader: downloaders[i][0] || ''
-    });
+
+  for (let start = 2; start <= lastRow; start += CHUNK) {
+    const numRows = Math.min(CHUNK, lastRow - start + 1);
+    // Read 3 columns per chunk: shortcode (B=2), username (E=5), downloader (J=10)
+    const scChunk = sheet.getRange(start, 2, numRows, 1).getValues();
+    const unChunk = sheet.getRange(start, 5, numRows, 1).getValues();
+    const dlChunk = sheet.getRange(start, 10, numRows, 1).getValues();
+
+    for (let i = 0; i < numRows; i++) {
+      const sc = scChunk[i][0];
+      if (!sc) continue;
+      downloads.push({
+        shortcode: sc,
+        username: unChunk[i][0] || '',
+        downloader: dlChunk[i][0] || ''
+      });
+    }
   }
 
   return {
@@ -257,8 +278,7 @@ function checkIfDownloaded(ss, shortcodes) {
   const downloadedSet = new Set();
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) {
-    const data = sheet.getRange(2, 2, lastRow - 1, 1).getValues(); // col B only
-    data.forEach(row => { if (row[0]) downloadedSet.add(row[0]); });
+    readColumnChunked(sheet, 2, 2, lastRow).forEach(v => { if (v) downloadedSet.add(v); });
   }
 
   const results = {};
@@ -279,14 +299,12 @@ function checkIfDownloaded(ss, shortcodes) {
 function addDownload(ss, data) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  // Check for duplicate — read only shortcode column to avoid size limits
+  // Check for duplicate — read shortcode column in chunks for large sheets
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) {
-    const shortcodes = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
-    for (let i = 0; i < shortcodes.length; i++) {
-      if (shortcodes[i][0] === data.shortcode) {
-        return { success: true, duplicate: true, message: 'Already tracked' };
-      }
+    const shortcodes = readColumnChunked(sheet, 2, 2, lastRow);
+    if (shortcodes.indexOf(data.shortcode) >= 0) {
+      return { success: true, duplicate: true, message: 'Already tracked' };
     }
   }
 
@@ -323,12 +341,11 @@ function addBatchDownloads(ss, downloads) {
   let added = 0;
   let duplicates = 0;
 
-  // Get existing shortcodes — read only column B to avoid size limits
+  // Get existing shortcodes — read column B in chunks for large sheets
   const existingShortcodes = new Set();
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) {
-    const scData = sheet.getRange(2, 2, lastRow - 1, 1).getValues();
-    scData.forEach(row => existingShortcodes.add(row[0]));
+    readColumnChunked(sheet, 2, 2, lastRow).forEach(v => existingShortcodes.add(v));
   }
 
   // Filter out duplicates and prepare rows
@@ -420,13 +437,12 @@ function updateProfileStatsForUser(ss, username) {
   const downloadsSheet = getOrCreateDownloadsSheet(ss);
   const profilesSheet = getOrCreateProfilesSheet(ss);
 
-  // Count downloads for this user — read only username column to avoid size limits
+  // Count downloads for this user — read username column in chunks for large sheets
   let downloadedCount = 0;
   const dlLastRow = downloadsSheet.getLastRow();
   if (dlLastRow > 1) {
-    const usernames = downloadsSheet.getRange(2, 5, dlLastRow - 1, 1).getValues();
-    usernames.forEach(row => {
-      if (row[0] === username) downloadedCount++;
+    readColumnChunked(downloadsSheet, 5, 2, dlLastRow).forEach(v => {
+      if (v === username) downloadedCount++;
     });
   }
 
