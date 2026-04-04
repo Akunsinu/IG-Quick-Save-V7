@@ -4,24 +4,27 @@
  *
  * SETUP INSTRUCTIONS:
  *
- * 1. Create a new Google Sheet (sheets and headers are auto-created on first use)
- * 2. Go to Extensions > Apps Script
+ * 1. Open your Google Sheet
+ * 2. Go to Extensions > Apps Script (sheet is auto-detected, no ID needed)
  * 3. Delete any existing code and paste this entire file
- * 4. Update SPREADSHEET_ID below with your Google Sheet ID (from the URL)
- * 5. Click Deploy > New Deployment
+ * 4. Click Deploy > New Deployment
  * 6. Select type: Web app
  * 7. Set Execute as: Me
  * 8. Set Who has access: Anyone
- * 9. Click Deploy and copy the Web App URL
+ * 9. Click Deploy and copy the Web App URL (must end in /exec)
  * 10. Paste that URL into the extension's Team Sync settings
- *
- * Your Sheet ID is in the URL: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit
  */
 
 // ============================================================
-// CONFIGURATION - UPDATE THIS WITH YOUR SHEET ID
+// CONFIGURATION
 // ============================================================
-const SPREADSHEET_ID = '1OfKy8Zux_Imv1YC6vCDcwsSFMqUyXnDhwkM2QIoTv6Y';  // <-- REPLACE THIS
+// If this script is bound to a sheet (Extensions > Apps Script), it auto-detects the sheet.
+// If standalone, set SPREADSHEET_ID manually.
+const SPREADSHEET_ID = '';  // Leave empty to auto-detect, or paste a Sheet ID here
+function getSpreadsheet() {
+  if (SPREADSHEET_ID) return getSpreadsheet();
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
 const DOWNLOADS_SHEET = 'Downloads';
 const PROFILES_SHEET = 'Profiles';
 const NAMES_SHEET = 'Names';
@@ -103,7 +106,7 @@ function headersMatch(current, expected) {
 function doGet(e) {
   try {
     const action = e.parameter.action || 'getAll';
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ss = getSpreadsheet();
 
     let result;
 
@@ -149,7 +152,7 @@ function doPost(e) {
 
     const data = JSON.parse(e.postData.contents);
     const action = data.action || 'addDownload';
-    const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    const ss = getSpreadsheet();
 
     let result;
 
@@ -615,7 +618,7 @@ function updateNameMapping(ss, username, realName) {
  * Test the getAllDownloads function
  */
 function testGetAll() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = getSpreadsheet();
   const result = getAllDownloads(ss);
   Logger.log(JSON.stringify(result, null, 2));
 }
@@ -624,7 +627,7 @@ function testGetAll() {
  * Test the getProfiles function
  */
 function testGetProfiles() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = getSpreadsheet();
   const result = getProfileStats(ss);
   Logger.log(JSON.stringify(result, null, 2));
 }
@@ -633,7 +636,7 @@ function testGetProfiles() {
  * Test adding a download
  */
 function testAddDownload() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = getSpreadsheet();
   const result = addDownload(ss, {
     shortcode: 'TEST123456',
     real_name: 'Test User',
@@ -652,7 +655,7 @@ function testAddDownload() {
  * Test getting all name mappings
  */
 function testGetNames() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = getSpreadsheet();
   const result = getAllNames(ss);
   Logger.log(JSON.stringify(result, null, 2));
 }
@@ -661,7 +664,7 @@ function testGetNames() {
  * Test adding a name mapping
  */
 function testAddName() {
-  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const ss = getSpreadsheet();
   const result = addNameMapping(ss, 'testuser', 'Test User Name');
   Logger.log(JSON.stringify(result, null, 2));
 }
