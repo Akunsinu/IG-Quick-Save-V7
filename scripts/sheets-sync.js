@@ -242,8 +242,8 @@ const SheetsSync = {
     } catch (error) {
       console.error('[SheetsSync] Refresh error:', error);
       // Provide a more helpful message for abort/timeout errors
-      let errorMsg = error.message;
-      if (error.name === 'AbortError' || errorMsg.includes('abort')) {
+      let errorMsg = error.message || String(error);
+      if (error.name === 'AbortError' || (errorMsg && errorMsg.includes('abort'))) {
         errorMsg = 'Google Apps Script took too long to respond. This is normal on first use (cold start). Try again in a moment.';
       }
       return { success: false, error: errorMsg };
