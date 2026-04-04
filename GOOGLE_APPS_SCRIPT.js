@@ -272,15 +272,12 @@ function getProfileStats(ss) {
 function checkIfDownloaded(ss, shortcodes) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  const downloadedSet = new Set();
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    readColumnChunked(sheet, 2, 2, lastRow).forEach(v => { if (v) downloadedSet.add(v); });
-  }
-
+  // Use TextFinder for each shortcode — fast lookup without loading all data
   const results = {};
+  const range = sheet.getRange('B:B');
   shortcodes.forEach(sc => {
-    results[sc] = downloadedSet.has(sc);
+    const finder = range.createTextFinder(sc).matchEntireCell(true);
+    results[sc] = !!finder.findNext();
   });
 
   return { results };
@@ -296,11 +293,10 @@ function checkIfDownloaded(ss, shortcodes) {
 function addDownload(ss, data) {
   const sheet = getOrCreateDownloadsSheet(ss);
 
-  // Check for duplicate — read shortcode column in chunks for large sheets
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    const shortcodes = readColumnChunked(sheet, 2, 2, lastRow);
-    if (shortcodes.indexOf(data.shortcode) >= 0) {
+  // Check for duplicate using TextFinder — instant search, no data loading
+  if (data.shortcode) {
+    const finder = sheet.getRange('B:B').createTextFinder(data.shortcode).matchEntireCell(true);
+    if (finder.findNext()) {
       return { success: true, duplicate: true, message: 'Already tracked' };
     }
   }
@@ -338,11 +334,17 @@ function addBatchDownloads(ss, downloads) {
   let added = 0;
   let duplicates = 0;
 
-  // Get existing shortcodes — read column B in chunks for large sheets
+  // Build existing shortcodes set using TextFinder for each incoming shortcode
+  // For batch, we still need the full set — read column B in one range per chunk
   const existingShortcodes = new Set();
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) {
-    readColumnChunked(sheet, 2, 2, lastRow).forEach(v => existingShortcodes.add(v));
+    const CHUNK = 5000;
+    for (let start = 2; start <= lastRow; start += CHUNK) {
+      const numRows = Math.min(CHUNK, lastRow - start + 1);
+      const chunk = sheet.getRange(start, 2, numRows, 1).getValues();
+      chunk.forEach(row => existingShortcodes.add(row[0]));
+    }
   }
 
   // Filter out duplicates and prepare rows
@@ -434,14 +436,9 @@ function updateProfileStatsForUser(ss, username) {
   const downloadsSheet = getOrCreateDownloadsSheet(ss);
   const profilesSheet = getOrCreateProfilesSheet(ss);
 
-  // Count downloads for this user — read username column in chunks for large sheets
-  let downloadedCount = 0;
-  const dlLastRow = downloadsSheet.getLastRow();
-  if (dlLastRow > 1) {
-    readColumnChunked(downloadsSheet, 5, 2, dlLastRow).forEach(v => {
-      if (v === username) downloadedCount++;
-    });
-  }
+  // Count downloads for this user using TextFinder — no data loading needed
+  const downloadedCount = downloadsSheet.getRange('E:E')
+    .createTextFinder(username).matchEntireCell(true).findAll().length;
 
   // Find or create profile row
   const profilesData = profilesSheet.getDataRange().getValues();
