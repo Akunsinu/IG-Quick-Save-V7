@@ -216,24 +216,21 @@ function getAllDownloads(ss) {
     return { downloads: [], count: 0 };
   }
 
-  // Sheet has 13,000+ rows — read in chunks to avoid size limits
-  const CHUNK = 2000;
+  // Sheet has 13,000+ rows — read cols B-J in one call per chunk (1 call vs 3)
+  // B=shortcode(idx 0), E=username(idx 3), J=downloader(idx 8) within B:J range
+  const CHUNK = 5000;
   const downloads = [];
 
   for (let start = 2; start <= lastRow; start += CHUNK) {
     const numRows = Math.min(CHUNK, lastRow - start + 1);
-    // Read 3 columns per chunk: shortcode (B=2), username (E=5), downloader (J=10)
-    const scChunk = sheet.getRange(start, 2, numRows, 1).getValues();
-    const unChunk = sheet.getRange(start, 5, numRows, 1).getValues();
-    const dlChunk = sheet.getRange(start, 10, numRows, 1).getValues();
-
+    const chunk = sheet.getRange(start, 2, numRows, 9).getValues(); // cols B through J
     for (let i = 0; i < numRows; i++) {
-      const sc = scChunk[i][0];
+      const sc = chunk[i][0]; // B = index 0
       if (!sc) continue;
       downloads.push({
         shortcode: sc,
-        username: unChunk[i][0] || '',
-        downloader: dlChunk[i][0] || ''
+        username: chunk[i][3] || '',   // E = index 3
+        downloader: chunk[i][8] || ''  // J = index 8
       });
     }
   }
