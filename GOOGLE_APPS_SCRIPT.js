@@ -334,30 +334,28 @@ function addBatchDownloads(ss, downloads) {
   let added = 0;
   let duplicates = 0;
 
-  // Build existing shortcodes set using TextFinder for each incoming shortcode
-  // For batch, we still need the full set — read column B in one range per chunk
-  const existingShortcodes = new Set();
-  const lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    const CHUNK = 5000;
-    for (let start = 2; start <= lastRow; start += CHUNK) {
-      const numRows = Math.min(CHUNK, lastRow - start + 1);
-      const chunk = sheet.getRange(start, 2, numRows, 1).getValues();
-      chunk.forEach(row => existingShortcodes.add(row[0]));
-    }
-  }
+  // Use TextFinder per shortcode — instant lookup, no data loading
+  const scRange = sheet.getRange('B:B');
+  const seenInBatch = new Set();
 
   // Filter out duplicates and prepare rows
   const newRows = [];
   const usersToUpdate = new Set();
 
   downloads.forEach(data => {
-    if (existingShortcodes.has(data.shortcode)) {
+    // Skip if already in this batch
+    if (seenInBatch.has(data.shortcode)) {
+      duplicates++;
+      return;
+    }
+    // Skip if already in the sheet
+    const finder = scRange.createTextFinder(data.shortcode).matchEntireCell(true);
+    if (finder.findNext()) {
       duplicates++;
       return;
     }
 
-    existingShortcodes.add(data.shortcode); // Prevent duplicates within batch
+    seenInBatch.add(data.shortcode);
     usersToUpdate.add(data.username);
 
     newRows.push([
