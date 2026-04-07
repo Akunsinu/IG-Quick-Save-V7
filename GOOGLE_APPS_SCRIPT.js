@@ -96,6 +96,25 @@ function headersMatch(current, expected) {
 }
 
 /**
+ * Find the last row with actual data in the Downloads sheet.
+ * sheet.getLastRow() can be inflated by ghost rows (empty rows left
+ * behind by clearContent). This checks column B (shortcode) to find
+ * the real last data row.
+ */
+function getLastDataRow(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return 1; // Only header or empty
+
+  // If column B has data at the reported last row, no ghost rows
+  const val = sheet.getRange(lastRow, 2).getValue();
+  if (val !== '' && val !== null && val !== undefined) return lastRow;
+
+  // Ghost rows exist — walk up from bottom of column B
+  const lastDataCell = sheet.getRange(lastRow, 2).getNextDataCell(SpreadsheetApp.Direction.UP);
+  return lastDataCell.getRow();
+}
+
+/**
  * Read a single column in chunks to avoid size limits on large sheets (13,000+ rows).
  * Returns a flat array of values.
  */
@@ -317,7 +336,8 @@ function addDownload(ss, data) {
     data.collaborators || ''                            // collaborators (comma-separated)
   ];
 
-  sheet.appendRow(row);
+  const startRow = getLastDataRow(sheet) + 1;
+  sheet.getRange(startRow, 1, 1, row.length).setValues([row]);
 
   // Update profile stats
   updateProfileStatsForUser(ss, data.username);
@@ -376,7 +396,7 @@ function addBatchDownloads(ss, downloads) {
 
   // Append all new rows at once (more efficient)
   if (newRows.length > 0) {
-    const startRow = sheet.getLastRow() + 1;
+    const startRow = getLastDataRow(sheet) + 1;
     sheet.getRange(startRow, 1, newRows.length, newRows[0].length).setValues(newRows);
     added = newRows.length;
   }
@@ -670,4 +690,100 @@ function testAddName() {
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   const result = addNameMapping(ss, 'testuser', 'Test User Name');
   Logger.log(JSON.stringify(result, null, 2));
+}
+
+/**
+ * ONE-TIME CLEANUP: Delete ghost rows and relocate misplaced data.
+ *
+ * Run this once from the Apps Script editor (▶ button) to fix the
+ * Downloads sheet after clearContent() left empty rows behind.
+ *
+ * What it does:
+ *   1. Finds any data rows that landed AFTER the ghost-row gap
+ *   2. Moves them up to be contiguous with the main data
+ *   3. Deletes all empty rows between data and sheet bottom
+ *   4. Preserves ALL columns (including user columns O-R) and formatting
+ *
+ * Uses small chunked reads (500 rows) to avoid the size limit error.
+ */
+function cleanupGhostRows() {
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(DOWNLOADS_SHEET);
+  if (!sheet) { Logger.log('No Downloads sheet found'); return; }
+
+  const maxRow = sheet.getMaxRows();
+  const lastDataRow = getLastDataRow(sheet);
+
+  Logger.log('MaxRows: ' + maxRow + ', LastDataRow (col B): ' + lastDataRow);
+
+  // Step 1: Find the end of the contiguous data block by scanning column B in small chunks
+  const CHUNK = 500;
+  let contiguousEnd = 1; // header row
+  let foundGap = false;
+
+  for (let start = 2; start <= lastDataRow && !foundGap; start += CHUNK) {
+    const numRows = Math.min(CHUNK, lastDataRow - start + 1);
+    const chunk = sheet.getRange(start, 2, numRows, 1).getValues();
+    for (let i = 0; i < chunk.length; i++) {
+      if (chunk[i][0] === '' || chunk[i][0] === null) {
+        contiguousEnd = start + i - 1;
+        foundGap = true;
+        break;
+      }
+    }
+    if (!foundGap) {
+      contiguousEnd = start + numRows - 1;
+    }
+  }
+
+  Logger.log('Contiguous data ends at row: ' + contiguousEnd);
+
+  // Step 2: If there's data after the gap, find and relocate it
+  if (lastDataRow > contiguousEnd) {
+    // Scan forward in chunks to find where misplaced data starts
+    let misplacedStart = -1;
+    for (let start = contiguousEnd + 1; start <= lastDataRow && misplacedStart < 0; start += CHUNK) {
+      const numRows = Math.min(CHUNK, lastDataRow - start + 1);
+      const chunk = sheet.getRange(start, 2, numRows, 1).getValues();
+      for (let i = 0; i < chunk.length; i++) {
+        if (chunk[i][0] !== '' && chunk[i][0] !== null) {
+          misplacedStart = start + i;
+          break;
+        }
+      }
+    }
+
+    if (misplacedStart > 0) {
+      const misplacedCount = lastDataRow - misplacedStart + 1;
+      Logger.log('Found ' + misplacedCount + ' misplaced rows starting at row ' + misplacedStart);
+
+      // Move misplaced rows in chunks (read all columns per chunk)
+      const totalCols = sheet.getLastColumn();
+      let destRow = contiguousEnd + 1;
+
+      for (let start = misplacedStart; start <= lastDataRow; start += CHUNK) {
+        const numRows = Math.min(CHUNK, lastDataRow - start + 1);
+        const data = sheet.getRange(start, 1, numRows, totalCols).getValues();
+        sheet.getRange(destRow, 1, numRows, totalCols).setValues(data);
+        // Clear old location
+        sheet.getRange(start, 1, numRows, totalCols).clearContent();
+        destRow += numRows;
+      }
+
+      contiguousEnd = destRow - 1;
+      Logger.log('Moved misplaced rows. Data now ends at row ' + contiguousEnd);
+    }
+  }
+
+  // Step 3: Delete all empty rows after contiguous data
+  const rowsToDelete = maxRow - contiguousEnd;
+  if (rowsToDelete > 0) {
+    Logger.log('Deleting ' + rowsToDelete + ' ghost rows (' + (contiguousEnd + 1) + ' to ' + maxRow + ')');
+    sheet.deleteRows(contiguousEnd + 1, rowsToDelete);
+    Logger.log('Done! Ghost rows removed.');
+  } else {
+    Logger.log('No ghost rows to delete.');
+  }
+
+  Logger.log('Cleanup complete. Sheet now has ' + sheet.getMaxRows() + ' rows.');
 }
