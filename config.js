@@ -24,7 +24,7 @@ const CONFIG = {
     EXTRACTION_WAIT_TIMEOUT: 3000,            // How long popup waits for extraction (ms)
     POLL_INTERVAL_START: 500,                 // Initial polling interval (ms)
     POLL_INTERVAL_MAX: 2000,                  // Maximum polling interval (ms)
-    POLL_MAX_WAIT: 15000,                     // Max time to wait for data (ms) - reduced from 60s to prevent long hangs
+    POLL_MAX_WAIT: 300000,                    // Max time to wait for data (ms) - 5 min for posts with thousands of comments
     POLL_BACKOFF_MULTIPLIER: 1.5,             // Exponential backoff multiplier
 
     // Button UI feedback
@@ -139,8 +139,8 @@ const CONFIG = {
     FETCH_TIMEOUT: 30000,                     // Timeout for fetch requests (ms)
 
     // Request limits
-    MAX_GRAPHQL_REQUESTS: 50,                 // Safety limit for GraphQL pagination
-    MAX_API_REQUESTS: 50,                     // Safety limit for API pagination
+    MAX_GRAPHQL_REQUESTS: 200,                // Safety limit for GraphQL pagination
+    MAX_API_REQUESTS: 200,                    // Safety limit for API pagination
     MAX_CHILD_COMMENT_REQUESTS: 20,           // Safety limit for reply pagination
   },
 

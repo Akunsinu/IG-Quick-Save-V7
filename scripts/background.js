@@ -542,6 +542,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.type === 'MEDIA_RESPONSE') {
     currentData.media = message.data;
   } else if (message.type === 'EXTRACTION_PROGRESS') {
+    // Track that extraction is still actively running
+    currentData.lastProgressTime = Date.now();
     // Forward progress messages to the connected popup/sidepanel
     broadcastToUI({
       type: 'progress',
@@ -2574,7 +2576,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     }
 
     // Skip non-Instagram URLs
-    if (!tab.url.includes('instagram.com/p/') && !tab.url.includes('instagram.com/reel/')) {
+    if (!tab.url.includes('instagram.com/p/') && !tab.url.includes('instagram.com/reel/') && !tab.url.includes('instagram.com/reels/')) {
       return;
     }
 
@@ -2625,11 +2627,15 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       await sendMessageWithTimeout(tabId, { action: 'extractMedia' });
       await sendMessageWithTimeout(tabId, { action: 'extractComments' });
 
-      // Wait for extractions to complete with exponential backoff polling
+      // Wait for extractions to complete with progress-aware polling.
+      // Keeps waiting as long as progress updates arrive (comments still being fetched).
+      // Gives up after POLL_MAX_WAIT total OR 30s of no progress.
       console.log('[Background] Waiting for extraction to complete...');
       const maxWaitTime = CONFIG.TIMING.POLL_MAX_WAIT;
+      const INACTIVITY_TIMEOUT = 30000; // Give up if no progress for 30s
       let pollInterval = CONFIG.TIMING.POLL_INTERVAL_START; // Start at 500ms
       let waited = 0;
+      currentData.lastProgressTime = Date.now();
 
       while (waited < maxWaitTime) {
         // Check if both media and comments data are ready (comments can be empty array)
@@ -2642,8 +2648,15 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           break;
         }
 
+        // Check for inactivity — if no progress updates for 30s, extraction is likely stuck
+        const timeSinceProgress = Date.now() - (currentData.lastProgressTime || 0);
+        if (mediaReady && !commentsReady && timeSinceProgress > INACTIVITY_TIMEOUT) {
+          console.warn('[Background] ⚠️ No comment progress for', Math.round(timeSinceProgress/1000), 's — extraction may be stuck. Proceeding...');
+          break;
+        }
+
         if (mediaReady && !commentsReady) {
-          console.log('[Background] Waiting for comments... (', waited/1000, 's elapsed, next check in', pollInterval, 'ms)');
+          console.log('[Background] Waiting for comments... (', waited/1000, 's elapsed, last progress', Math.round(timeSinceProgress/1000), 's ago)');
         }
 
         await new Promise(resolve => setTimeout(resolve, pollInterval));
@@ -2657,7 +2670,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
       }
 
       if (waited >= maxWaitTime) {
-        console.warn('[Background] ⚠️ Timeout waiting for extraction. Proceeding with available data...');
+        console.warn('[Background] ⚠️ Timeout waiting for extraction after', waited/1000, 's. Proceeding with available data...');
       }
 
       // Trigger download all

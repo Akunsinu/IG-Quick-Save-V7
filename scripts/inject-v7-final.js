@@ -902,33 +902,56 @@
       console.log('[IG DL V2] Post has', post.comment_count, 'total comments');
       sendProgress(`📊 Found ${post.comment_count} total comments to fetch...`);
 
-      // PURE GRAPHQL: Fast and gets everything, presented as flat list
-      console.log('[IG DL v7] 🚀 Using PURE GraphQL method (fast, complete, flat list)...');
+      // Try GraphQL first (fast), fall back to REST API if it stops early
+      console.log('[IG DL v7] 🚀 Starting with GraphQL method...');
 
       let comments = [];
       let totalReplies = 0;
 
+      // Step 1: Try GraphQL (fast, ~50 comments/page, but may cap at ~800)
+      let graphqlComments = [];
       try {
-        // Get ALL comments via GraphQL (super fast!)
-        const allCommentsFlat = await fetchCommentsViaGraphQL(post.code, post.comment_count);
-        console.log('[IG DL v7] ✅ GraphQL fetched', allCommentsFlat.length, 'total comments');
-
-        // Present all comments as parent comments with empty replies
-        // GraphQL doesn't give us parent-child relationship, so we treat all as top-level
-        comments = allCommentsFlat.map(comment => ({
-          ...comment,
-          replies: [] // No nesting info available from GraphQL
-        }));
-
-        totalReplies = 0; // All comments are treated as parents
-
-        console.log('[IG DL v7] ✅ All', comments.length, 'comments retrieved (flat list, no nesting)');
-        console.log('[IG DL v7] Note: Comments are presented as a flat list since GraphQL doesn\'t provide nesting info');
-
+        graphqlComments = await fetchCommentsViaGraphQL(post.code, post.comment_count);
+        console.log('[IG DL v7] ✅ GraphQL fetched', graphqlComments.length, 'comments');
       } catch (error) {
-        console.error('[IG DL v7] ❌ GraphQL extraction failed:', error.message);
-        throw error;
+        console.warn('[IG DL v7] ⚠️ GraphQL failed:', error.message);
       }
+
+      // Step 2: If GraphQL got < 80% of expected, try REST API for more
+      const graphqlRatio = post.comment_count > 0 ? graphqlComments.length / post.comment_count : 1;
+      const mediaId = post.pk || post.id;
+
+      if (graphqlRatio < 0.8 && mediaId && post.comment_count > graphqlComments.length) {
+        console.log('[IG DL v7] 🔄 GraphQL only got', Math.round(graphqlRatio * 100) + '% of comments. Trying REST API...');
+        sendProgress(`🔄 GraphQL got ${graphqlComments.length}/${post.comment_count}. Trying REST API for more...`);
+
+        try {
+          const apiComments = await fetchCommentsViaAPI(mediaId, post.comment_count, true);
+          console.log('[IG DL v7] REST API fetched', apiComments.length, 'comments');
+
+          // Use whichever method got more, or merge if REST got additional ones
+          if (apiComments.length > graphqlComments.length) {
+            // REST API got more — merge unique comments from both
+            const seenIds = new Set(apiComments.map(c => String(c.id)));
+            const uniqueFromGraphQL = graphqlComments.filter(c => !seenIds.has(String(c.id)));
+            comments = [...apiComments, ...uniqueFromGraphQL];
+            console.log('[IG DL v7] ✅ Merged: REST(' + apiComments.length + ') + unique GraphQL(' + uniqueFromGraphQL.length + ') = ' + comments.length);
+          } else {
+            // GraphQL still got more — use GraphQL results
+            comments = graphqlComments.map(c => ({ ...c, replies: [] }));
+            console.log('[IG DL v7] ✅ Keeping GraphQL results (' + comments.length + ' comments)');
+          }
+        } catch (error) {
+          console.warn('[IG DL v7] ⚠️ REST API also failed:', error.message);
+          comments = graphqlComments.map(c => ({ ...c, replies: [] }));
+        }
+      } else {
+        // GraphQL got enough, use it
+        comments = graphqlComments.map(c => ({ ...c, replies: [] }));
+        console.log('[IG DL v7] ✅ GraphQL got', comments.length, 'comments (sufficient)');
+      }
+
+      totalReplies = comments.reduce((sum, c) => sum + (c.replies?.length || 0), 0);
 
       // FINAL VERIFICATION
       const grandTotal = comments.length + totalReplies;
