@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.3.4',
-  VERSION_NAME: 'V8.3.4 - Fix Sheets Column Alignment & Duplicate Rows',
-  RELEASE_DATE: '2026-04-03',
+  VERSION: '8.3.5',
+  VERSION_NAME: 'V8.3.5 - Fix Ghost Rows, Navigation Timeout & Comment Cutoff',
+  RELEASE_DATE: '2026-04-17',
 
   // ============================================================================
   // TIMING & DELAYS

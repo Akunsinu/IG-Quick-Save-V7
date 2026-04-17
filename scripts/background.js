@@ -2534,11 +2534,25 @@ async function _processNextBatchUrlInner() {
     // Safety timeout: if tab listener doesn't process this URL within 60s, advance
     // This prevents permanent stalls from redirects, non-IG pages, or missed events
     const navigationIndex = batchState.currentIndex; // Capture current index
-    setTimeout(() => {
+    setTimeout(async () => {
       // Only trigger if we're still stuck on the same URL
       if (batchState.isProcessing && batchState.currentIndex === navigationIndex && !batchState.isPaused) {
-        console.warn(`[Background] ⚠️ Navigation safety timeout for index ${navigationIndex}: ${url}`);
-        addFailedUrl({ url, error: 'Navigation timeout - page did not load or was redirected', timestamp: Date.now() });
+        // Query the actual tab URL to see where Instagram redirected
+        let actualUrl = 'unknown';
+        try {
+          const tab = await chrome.tabs.get(batchState.tabId);
+          actualUrl = tab.url || 'unknown';
+        } catch (e) {
+          actualUrl = `error: ${e.message}`;
+        }
+        console.warn(`[Background] ⚠️ Navigation safety timeout for index ${navigationIndex}`);
+        console.warn(`[Background]   Target URL: ${url}`);
+        console.warn(`[Background]   Actual tab URL: ${actualUrl}`);
+        addFailedUrl({
+          url,
+          error: `Navigation timeout - tab ended up at: ${actualUrl}`,
+          timestamp: Date.now()
+        });
         batchState.currentIndex++;
         currentlyProcessingTabUrl = null;
         batchState.isCurrentlyProcessingUrl = false;
@@ -2569,6 +2583,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   // Check if page is fully loaded
   if (changeInfo.status === 'complete' && tab.url) {
+    console.log('[Background] 🔍 Tab loaded:', tab.url);
+
     // RE-ENTRANCY GUARD: Skip if we're already processing this exact URL
     if (currentlyProcessingTabUrl === tab.url) {
       Logger.warn('TabListener', 'Skipping duplicate complete event', { url: tab.url });
@@ -2577,6 +2593,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
     // Skip non-Instagram URLs
     if (!tab.url.includes('instagram.com/p/') && !tab.url.includes('instagram.com/reel/') && !tab.url.includes('instagram.com/reels/')) {
+      console.warn('[Background] ⚠️ Skipping non-post URL (likely redirect/login/404):', tab.url);
       return;
     }
 
