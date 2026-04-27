@@ -2730,6 +2730,14 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled) {
           realName = SheetsSync.lookupName(username);
         }
+        console.log('[Background] 🏷️ Batch realName lookup:', {
+          username,
+          realName,
+          profileUsername: batchState.profileUsername,
+          postInfoUsername: postInfo.username,
+          syncEnabled: typeof SheetsSync !== 'undefined' && SheetsSync.config.enabled,
+          cacheNames: typeof SheetsSync !== 'undefined' ? SheetsSync.cache.names.size : 'n/a'
+        });
         const sanitizedRealName = realName
           ? realName.replace(/[\/\\:*?"<>|]/g, '_').trim()
           : null;

@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.3.5',
-  VERSION_NAME: 'V8.3.5 - Fix Ghost Rows, Navigation Timeout & Comment Cutoff',
-  RELEASE_DATE: '2026-04-17',
+  VERSION: '8.3.6',
+  VERSION_NAME: 'V8.3.6 - Fix Real Name in Filenames for Manual Buttons',
+  RELEASE_DATE: '2026-04-27',
 
   // ============================================================================
   // TIMING & DELAYS

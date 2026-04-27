@@ -636,13 +636,29 @@ downloadMediaBtn.addEventListener('click', async () => {
   setTimeout(() => setButtonLoading(downloadMediaBtn, false), 2000);
 });
 
-// Helper function to build custom folder name: username_POSTTYPE_YYYYMMDD_shortcode[_collab_user1_user2]
-function buildFolderName(postInfo) {
+// Look up real name via background's checkNameMapping. Returns sanitized name or null.
+async function lookupRealNameSanitized(username) {
+  if (!username) return null;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      action: 'checkNameMapping',
+      data: { username }
+    });
+    if (response?.enabled && response?.hasMapping && response?.realName) {
+      return response.realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
+    }
+  } catch (error) {
+    console.error('[SidePanel] Error getting name mapping:', error);
+  }
+  return null;
+}
+
+// Helper function to build custom folder name: [Real Name - ]username_IG_POSTTYPE_YYYYMMDD_shortcode[_collab_user1_user2]
+async function buildFolderName(postInfo) {
   const username = postInfo.username || 'unknown';
   const postType = (postInfo.post_type || 'post').toUpperCase();
   const shortcode = postInfo.shortcode || currentShortcode || 'post';
 
-  // Format date as YYYYMMDD (no dashes)
   let dateStr = 'unknown-date';
   if (postInfo.posted_at) {
     const date = new Date(postInfo.posted_at);
@@ -652,14 +668,15 @@ function buildFolderName(postInfo) {
     dateStr = `${year}${month}${day}`;
   }
 
-  // Build base name
-  let folderName = `${username}_${postType}_${dateStr}_${shortcode}`;
+  const sanitizedRealName = await lookupRealNameSanitized(username);
+  let folderName = sanitizedRealName
+    ? `${sanitizedRealName} - ${username}_IG_${postType}_${dateStr}_${shortcode}`
+    : `${username}_IG_${postType}_${dateStr}_${shortcode}`;
 
-  // Add collaborators if present
   if (postInfo.collaborators && Array.isArray(postInfo.collaborators) && postInfo.collaborators.length > 0) {
     const collabsToAdd = postInfo.collaborators
       .filter(c => c !== username)
-      .slice(0, 3); // Limit to 3 collaborators
+      .slice(0, 3);
 
     if (collabsToAdd.length > 0) {
       folderName += '_collab_' + collabsToAdd.join('_');
@@ -669,32 +686,22 @@ function buildFolderName(postInfo) {
   return folderName;
 }
 
-// Helper function to build base filename prefix
-function buildFilePrefix(postInfo) {
-  return buildFolderName(postInfo);
+async function buildFilePrefix(postInfo) {
+  return await buildFolderName(postInfo);
 }
 
-// Build custom filename: USERNAME_POSTTYPE_YYYY-MM-DD_shortcode_comments.ext
+async function getParentFolder(username) {
+  const sanitizedRealName = await lookupRealNameSanitized(username);
+  return sanitizedRealName ? `${sanitizedRealName} - ${username}` : (username || 'unknown');
+}
+
 async function buildCommentsFilename(postInfo, extension) {
   const username = postInfo.username || 'unknown';
-  const folderName = buildFolderName(postInfo);
-  const filePrefix = buildFilePrefix(postInfo);
-
-  // Get real name from background for parent folder
-  let parentFolder = username;
-  try {
-    const response = await chrome.runtime.sendMessage({
-      action: 'checkNameMapping',
-      data: { username }
-    });
-    if (response?.enabled && response?.hasMapping && response?.realName) {
-      const sanitizedRealName = response.realName.replace(/[\/\\:*?"<>|]/g, '_').trim();
-      parentFolder = `${sanitizedRealName} - ${username}`;
-    }
-  } catch (error) {
-    console.error('[SidePanel] Error getting name mapping:', error);
-  }
-
+  const [folderName, filePrefix, parentFolder] = await Promise.all([
+    buildFolderName(postInfo),
+    buildFilePrefix(postInfo),
+    getParentFolder(username)
+  ]);
   return `Instagram/${parentFolder}/${folderName}/comments/${filePrefix}_comments.${extension}`;
 }
 
@@ -761,10 +768,14 @@ downloadHtmlBtn.addEventListener('click', async () => {
   showStatus('info', '⏳ Downloading media and profile pictures for offline HTML...');
 
   const postInfo = extractedData.comments?.post_info || extractedData.media?.post_info || {};
-  const folderName = buildFolderName(postInfo);
-  const filePrefix = buildFilePrefix(postInfo);
+  const username = postInfo.username || 'unknown';
+  const [folderName, filePrefix, parentFolder] = await Promise.all([
+    buildFolderName(postInfo),
+    buildFilePrefix(postInfo),
+    getParentFolder(username)
+  ]);
 
-  const filename = `Instagram/${folderName}/${filePrefix}_archive.html`;
+  const filename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_archive.html`;
   const saveAs = askWhereToSaveCheckbox?.checked || false;
 
   port.postMessage({
@@ -791,10 +802,14 @@ downloadScreenshotBtn.addEventListener('click', async () => {
 
   // Build screenshot filename
   const postInfo = extractedData.comments?.post_info || extractedData.media?.post_info || {};
-  const folderName = buildFolderName(postInfo);
-  const filePrefix = buildFilePrefix(postInfo);
+  const username = postInfo.username || 'unknown';
+  const [folderName, filePrefix, parentFolder] = await Promise.all([
+    buildFolderName(postInfo),
+    buildFilePrefix(postInfo),
+    getParentFolder(username)
+  ]);
 
-  const filename = `Instagram/${folderName}/${filePrefix}_screenshot.png`;
+  const filename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_screenshot.png`;
   const saveAs = askWhereToSaveCheckbox?.checked || false;
 
   port.postMessage({
