@@ -90,9 +90,258 @@
     }
   }
 
+  // ============================================================
+  // MODERN COMMENT FETCH SUPPORT (V8.3.7)
+  // Passively learn Instagram's live comment doc_id + auth tokens from the page's
+  // own requests (modeled on profile-scraper.js), then replay them. Always falls
+  // back to the REST /comments/ endpoint below, so this can only help.
+  // ============================================================
+  const igNet = {
+    docId: (CONFIG.API && CONFIG.API.GRAPHQL_DOC_ID_FALLBACK) || null,
+    wwwClaim: null,
+    lastCommentVariables: null,
+    sawCommentRequest: false
+  };
+
+  function getCookie(name) {
+    const safe = name.replace(/[.$?*|{}()\[\]\\\/+^]/g, '\\$&');
+    const m = document.cookie.match(new RegExp('(?:^|; )' + safe + '=([^;]*)'));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  function getCsrfToken() {
+    return getCookie('csrftoken') || '';
+  }
+
+  // Headers Instagram's modern web app sends. X-CSRFToken comes from the csrftoken
+  // cookie; X-IG-WWW-Claim is echoed by IG responses (captured live, '0' until then).
+  function buildAuthHeaders(extra = {}) {
+    const headers = Object.assign({}, CONFIG.API.HEADERS, extra);
+    const csrf = getCsrfToken();
+    if (csrf) headers['X-CSRFToken'] = csrf;
+    headers['X-IG-WWW-Claim'] = igNet.wwwClaim || '0';
+    return headers;
+  }
+
+  function looksLikeCommentRequest(url, body) {
+    if (!url) return false;
+    const u = String(url);
+    if (u.includes('/api/v1/media/') && u.includes('/comments')) return true;
+    if (u.includes('/graphql/query') || u.includes('/api/graphql')) {
+      const b = body ? String(body) : '';
+      return /comment/i.test(b) || /comment/i.test(u);
+    }
+    return false;
+  }
+
+  function captureFromGraphqlBody(url, body) {
+    try {
+      const text = (body != null && typeof body === 'string') ? body : '';
+      let m = text.match(/(?:^|&)doc_id=(\d+)/);
+      if (!m && url) m = String(url).match(/[?&]doc_id=(\d+)/);
+      if (m) igNet.docId = m[1];
+      const vm = text.match(/(?:^|&)variables=([^&]+)/);
+      if (vm) {
+        try { igNet.lastCommentVariables = JSON.parse(decodeURIComponent(vm[1])); } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  // Install passive fetch + XHR interceptors. Defensive chaining: profile-scraper.js
+  // also wraps these, so we capture and call through whatever is already installed.
+  (function installCommentInterceptor() {
+    try {
+      const prevFetch = window.fetch;
+      window.fetch = async function(...args) {
+        const url = typeof args[0] === 'string' ? args[0] : args[0]?.url;
+        const body = args[1]?.body;
+        const response = await prevFetch.apply(this, args);
+        try {
+          const claim = response.headers && response.headers.get && response.headers.get('x-ig-set-www-claim');
+          if (claim) igNet.wwwClaim = claim;
+          if (looksLikeCommentRequest(url, body)) {
+            igNet.sawCommentRequest = true;
+            captureFromGraphqlBody(url, body);
+          }
+        } catch (e) {}
+        return response;
+      };
+    } catch (e) { console.warn('[IG DL v7] fetch interceptor install failed:', e?.message); }
+
+    try {
+      const prevOpen = XMLHttpRequest.prototype.open;
+      const prevSend = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function(method, url) {
+        this.__igUrl = url;
+        return prevOpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function(body) {
+        try {
+          this.addEventListener('loadend', () => {
+            try {
+              const claim = this.getResponseHeader && this.getResponseHeader('x-ig-set-www-claim');
+              if (claim) igNet.wwwClaim = claim;
+              if (looksLikeCommentRequest(this.__igUrl, body)) {
+                igNet.sawCommentRequest = true;
+                captureFromGraphqlBody(this.__igUrl, body);
+              }
+            } catch (e) {}
+          });
+        } catch (e) {}
+        return prevSend.apply(this, arguments);
+      };
+    } catch (e) { console.warn('[IG DL v7] XHR interceptor install failed:', e?.message); }
+  })();
+
+  // Best-effort nudge so the page issues a comments request we can learn the doc_id from.
+  // Scroll-only (no clicking) to avoid disturbing the page; safe no-op if it fails.
+  async function ensureDocIdCaptured() {
+    if (igNet.docId) return;
+    try { window.scrollTo(0, document.body.scrollHeight); } catch (e) {}
+    await new Promise(r => setTimeout(r, 1500));
+  }
+
+  // Map a thrown error / status to an internal errorType.
+  function classifyErrorType(error) {
+    const m = (error && error.message) || '';
+    if (m.includes('account_block:feedback_required') || /feedback_required|challenge_required/i.test(m)) return 'feedback_required';
+    if (m.includes('account_block:auth') || m.includes('401')) return 'auth';
+    if (m.includes('429') || m.includes('403') || /rate limit/i.test(m) || m.includes('HTML instead of JSON')) return 'rate_limit';
+    if (/timeout/i.test(m)) return 'timeout';
+    if (/network|failed to fetch/i.test(m)) return 'network';
+    return 'unknown';
+  }
+
+  // Inspect a non-OK response body for account-level blocks (hard-stop conditions).
+  async function detectBlockFromResponse(response) {
+    try {
+      const txt = await response.clone().text();
+      if (/feedback_required|challenge_required|spam/i.test(txt)) return 'feedback_required';
+      if (/login_required|not[_ ]?logged|checkpoint_required/i.test(txt)) return 'auth';
+    } catch (e) {}
+    return null;
+  }
+
+  // Normalize a comment node (GraphQL or REST shape) to our internal format.
+  function normalizeComment(node) {
+    const owner = node.owner || node.user || {};
+    return {
+      id: node.pk || node.id,
+      text: node.text || '',
+      created_at: node.created_at || node.created_at_utc || 0,
+      owner: {
+        id: owner.id || owner.pk,
+        username: owner.username,
+        profile_pic_url: owner.profile_pic_url
+      },
+      like_count: node.comment_like_count || node.edge_liked_by?.count || node.like_count || 0,
+      child_comment_count: node.child_comment_count || node.edge_threaded_comments?.count || 0,
+      replies: []
+    };
+  }
+
+  // Find a comments connection object anywhere in a GraphQL response (schema-tolerant).
+  function findCommentConnection(json) {
+    const data = (json && json.data) || json;
+    if (!data || typeof data !== 'object') return null;
+    const isConn = (v) => v && typeof v === 'object' && (Array.isArray(v.edges) || Array.isArray(v.comments));
+    for (const k of Object.keys(data)) {
+      if (/comment/i.test(k) && isConn(data[k])) return data[k];
+    }
+    for (const k of Object.keys(data)) {
+      const v = data[k];
+      if (v && typeof v === 'object') {
+        for (const k2 of Object.keys(v)) {
+          if (/comment/i.test(k2) && isConn(v[k2])) return v[k2];
+        }
+      }
+    }
+    return null;
+  }
+
+  // Modern comment fetch using the live-captured doc_id. Best-effort; never throws.
+  async function fetchCommentsModern(mediaId, expectedTotal = null) {
+    const result = { comments: [], partial: true, errorType: null, resumeCursor: null, source: 'none' };
+    if (!igNet.docId || !igNet.lastCommentVariables) {
+      console.log('[IG DL v7] Modern fetch skipped (no live doc_id captured yet)');
+      return result;
+    }
+    console.log('[IG DL v7] 🆕 Modern comment fetch using doc_id', igNet.docId);
+    try {
+      const seen = new Set();
+      let cursor = null;
+      let hasNext = true;
+      let req = 0;
+      const maxReq = CONFIG.API.MAX_GRAPHQL_REQUESTS;
+      const hardCap = CONFIG.API.MAX_COMMENT_FETCH || Infinity;
+      result.source = 'intercept';
+
+      while (hasNext && req < maxReq && result.comments.length < hardCap) {
+        req++;
+        const variables = Object.assign({}, igNet.lastCommentVariables, { media_id: String(mediaId) });
+        if (cursor) variables.after = cursor;
+        const bodyParams = new URLSearchParams();
+        bodyParams.set('doc_id', igNet.docId);
+        bodyParams.set('variables', JSON.stringify(variables));
+        bodyParams.set('server_timestamps', 'true');
+
+        const response = await fetchWithTimeout(`${CONFIG.API.BASE_URL}/graphql/query/`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: buildAuthHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
+          body: bodyParams.toString()
+        });
+
+        if (!response.ok) {
+          if (response.status === 429 || response.status === 403) { record429Error('graphql'); result.errorType = 'rate_limit'; }
+          console.warn('[IG DL v7] Modern fetch HTTP', response.status, '- falling back to REST');
+          break;
+        }
+        const json = await response.json();
+        const conn = findCommentConnection(json);
+        if (!conn) { console.warn('[IG DL v7] Modern fetch: no comment connection in response'); break; }
+        const edges = conn.edges || conn.comments || [];
+        for (const edge of edges) {
+          const node = edge.node || edge;
+          const id = node.pk || node.id;
+          if (id == null || seen.has(String(id))) continue;
+          seen.add(String(id));
+          result.comments.push(normalizeComment(node));
+        }
+        const pageInfo = conn.page_info || conn.pageInfo || {};
+        hasNext = !!pageInfo.has_next_page;
+        cursor = pageInfo.end_cursor || null;
+        sendProgress(expectedTotal
+          ? `💬 Fetching comments: ${result.comments.length}/${expectedTotal}...`
+          : `💬 Fetched ${result.comments.length} comments so far...`);
+        if (hasNext && cursor) {
+          await new Promise(r => setTimeout(r, getAdaptiveDelay('graphql')));
+        } else {
+          hasNext = false;
+        }
+      }
+      result.partial = expectedTotal ? result.comments.length < expectedTotal : false;
+      result.resumeCursor = cursor;
+      console.log('[IG DL v7] 🆕 Modern fetch collected', result.comments.length, 'comments');
+    } catch (e) {
+      console.warn('[IG DL v7] Modern fetch error (will fall back):', e?.message);
+      result.errorType = classifyErrorType(e);
+    }
+    return result;
+  }
+
   // Helper function to get actionable error message based on error type
   function getActionableError(error, context = '') {
     const errorMsg = error.message || error.toString();
+
+    // Account-level block (action blocked) - hard stop, do not retry
+    if (/feedback_required|challenge_required|account_block/i.test(errorMsg)) {
+      return {
+        error: 'Instagram flagged automated activity (action blocked).',
+        type: 'feedback_required',
+        guidance: 'Stop and wait several hours before extracting again. Avoid re-running on this account.'
+      };
+    }
 
     // Rate limiting detection
     if (error.status === 429 || errorMsg.includes('429') || errorMsg.includes('rate limit') || errorMsg.includes('HTML instead of JSON')) {
@@ -440,7 +689,7 @@
         const response = await fetchWithTimeout(url, {
           method: 'GET',
           credentials: 'include',
-          headers: CONFIG.API.HEADERS
+          headers: buildAuthHeaders()
         });
 
         if (!response.ok) {
@@ -553,7 +802,7 @@
             const response = await fetchWithTimeout(url, {
               method: 'GET',
               credentials: 'include',
-              headers: CONFIG.API.HEADERS
+              headers: buildAuthHeaders()
             });
 
             if (!response.ok) {
@@ -647,19 +896,23 @@
       console.log('[IG DL v7] ⚡ SKIP REPLIES MODE - Will only fetch parent comments to avoid rate limiting');
     }
 
+    const allComments = [];
+    let totalReplies = 0;
+    let hasMore = true;
+    let maxId = null;
+    let requestCount = 0;
+    const maxRequests = CONFIG.API.MAX_API_REQUESTS;
+    const hardCap = CONFIG.API.MAX_COMMENT_FETCH || Infinity;
+    let consecutiveEmptyResponses = 0;
+    let isRateLimited = false;
+    let aborted = false;       // stopped early due to an error (block or exhausted retries)
+    let abortType = null;      // errorType describing why we aborted
+
     try {
       console.log('[IG DL v7] Fetching comments via direct API call...');
 
-      const allComments = [];
-      let hasMore = true;
-      let maxId = null;
-      let requestCount = 0;
-      const maxRequests = CONFIG.API.MAX_API_REQUESTS;
-      let consecutiveEmptyResponses = 0;
-      let isRateLimited = false;
-
       // Fetch main comments with pagination
-      while (hasMore && requestCount < maxRequests) {
+      while (hasMore && requestCount < maxRequests && allComments.length < hardCap) {
         requestCount++;
 
         // Build URL with pagination
@@ -680,20 +933,31 @@
             const response = await fetchWithTimeout(url, {
               method: 'GET',
               credentials: 'include',
-              headers: CONFIG.API.HEADERS
+              headers: buildAuthHeaders()
             });
 
             if (!response.ok) {
-              // Record rate limit and increase delays
-              if (response.status === 429) {
+              // Account-level blocks are hard-stops (retrying escalates them)
+              const blockType = await detectBlockFromResponse(response);
+              if (blockType === 'feedback_required') {
+                abortType = 'feedback_required';
+                throw new Error('account_block:feedback_required');
+              }
+              if (blockType === 'auth' || response.status === 401) {
+                abortType = 'auth';
+                throw new Error('account_block:auth');
+              }
+              // 429/403 = rate limit (retryable with backoff)
+              if (response.status === 429 || response.status === 403) {
                 record429Error('commentApi');
                 isRateLimited = true;
+                throw new Error(`HTTP ${response.status} (retryable rate limit)`);
               }
-              // Rate limit or server error - retry with backoff
-              if (response.status === 429 || response.status >= 500) {
+              // Server error - retry with backoff
+              if (response.status >= 500) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText} (retryable)`);
               }
-              // Client error - don't retry
+              // Other client error - don't retry
               console.error('[IG DL v7] ❌ HTTP Error:', response.status, response.statusText);
               throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
@@ -702,19 +966,26 @@
             break; // Success, exit retry loop
 
           } catch (error) {
+            // Account-level block: abort immediately, keep what we collected
+            if (error.message && error.message.startsWith('account_block:')) {
+              console.error('[IG DL v7] 🛑 Account-level block detected:', error.message);
+              aborted = true;
+              break;
+            }
+
             retryCount++;
+
+            // Check if this is a rate limit error
+            if (error.message && (error.message.includes('rate limited') || error.message.includes('HTML instead of JSON') || error.message.includes('429') || error.message.includes('403'))) {
+              isRateLimited = true;
+              console.error('[IG DL v7] 🚫 RATE LIMITED by Instagram!');
+            }
 
             if (retryCount >= maxRetries) {
               console.error('[IG DL v7] ❌ Failed after', maxRetries, 'retries:', error.message);
-              throw error;
-            }
-
-            // Check if this is a rate limit error
-            if (error.message.includes('rate limited') || error.message.includes('HTML instead of JSON')) {
-              isRateLimited = true;
-              console.error('[IG DL v7] 🚫 RATE LIMITED by Instagram!');
-              console.error('[IG DL v7] You need to wait 5-10 minutes before trying again.');
-              console.error('[IG DL v7] Or try using GraphQL fallback.');
+              aborted = true;
+              abortType = isRateLimited ? 'rate_limit' : classifyErrorType(error);
+              break;
             }
 
             // Exponential backoff using CONFIG
@@ -723,6 +994,12 @@
             console.warn('[IG DL v7] Error:', error.message);
             await new Promise(resolve => setTimeout(resolve, backoffDelay));
           }
+        }
+
+        // If the retry loop aborted (hard block or exhausted retries), stop paginating but KEEP what we have
+        if (aborted) {
+          console.warn('[IG DL v7] ⚠️ Stopping pagination early; keeping', allComments.length, 'comments collected so far');
+          break;
         }
 
         // DETAILED DEBUGGING: Log API response structure
@@ -819,7 +1096,7 @@
       console.log('[IG DL v7] ✅ Fetched total of', allComments.length, 'main comments');
 
       // Now fetch replies for each comment that has them
-      let totalReplies = 0;
+      totalReplies = 0;
 
       if (skipReplies) {
         console.log('[IG DL v7] ⚡ Skipping reply fetching (skipReplies mode enabled)');
@@ -871,11 +1148,25 @@
         }
       }
 
-      return allComments;
+      const reachedExpected = expectedTotal ? grandTotal >= expectedTotal : true;
+      return {
+        comments: allComments,
+        totalReplies,
+        partial: aborted || !reachedExpected,
+        errorType: aborted ? (abortType || 'unknown') : null,
+        resumeCursor: maxId || null
+      };
 
     } catch (error) {
-      console.error('[IG DL v7] Error fetching via API:', error);
-      throw error;
+      // NEVER discard: return whatever we accumulated so far
+      console.error('[IG DL v7] Error fetching via API (returning partial):', error);
+      return {
+        comments: allComments,
+        totalReplies,
+        partial: true,
+        errorType: classifyErrorType(error),
+        resumeCursor: maxId || null
+      };
     }
   }
 
@@ -889,129 +1180,115 @@
     console.log('[IG DL V2] 🎯 extractComments() function called!');
     sendProgress('⏳ Starting comment extraction...');
 
+    // Accumulate across all mechanisms, deduped by comment id. We NEVER discard what we
+    // collected: even on rate-limit / error we return the partial set with a status flag.
+    const accumulated = new Map();
+    let post = null;
+    let postInfo = null;
+    let worstErrorType = null;
+    let sawAbort = false;
+
+    const SEVERITY = { feedback_required: 5, auth: 4, rate_limit: 3, timeout: 2, network: 1, unknown: 1 };
+    const ERR_TEXT = {
+      feedback_required: { error: 'Instagram flagged automated activity (action blocked).', guidance: 'Stop and wait several hours before extracting again. Avoid re-running on this account.' },
+      auth: { error: 'Instagram session/login issue.', guidance: 'Refresh Instagram, make sure you are logged in, then try again.' },
+      rate_limit: { error: 'Rate limited by Instagram before all comments were fetched.', guidance: 'Partial comments were saved. Wait 5-10 minutes and re-run to collect more.' },
+      timeout: { error: 'Timed out before all comments were fetched.', guidance: 'Partial comments were saved. Re-run to collect more.' },
+      network: { error: 'Network error during comment fetch.', guidance: 'Partial comments were saved. Check your connection and re-run.' },
+      unknown: { error: 'Comment fetch stopped early.', guidance: 'Partial comments were saved. Re-run to try collecting more.' }
+    };
+
+    const mergeErr = (t) => { if (t && (!worstErrorType || (SEVERITY[t] || 0) > (SEVERITY[worstErrorType] || 0))) worstErrorType = t; };
+    const addAll = (list) => {
+      for (const c of (list || [])) {
+        const id = c && c.id;
+        if (id == null) continue;
+        if (!accumulated.has(String(id))) accumulated.set(String(id), c);
+      }
+    };
+    const buildResult = (extra = {}) => {
+      const comments = Array.from(accumulated.values());
+      const totalReplies = comments.reduce((s, c) => s + (c.replies?.length || 0), 0);
+      const totalFetched = comments.length + totalReplies;
+      const expected = (post && post.comment_count) || comments.length;
+      const partial = extra.forcePartial === true || sawAbort || (expected ? totalFetched < expected : false);
+      const errType = extra.errorType || worstErrorType || null;
+      const txt = (partial && errType) ? (ERR_TEXT[errType] || { error: null, guidance: null }) : { error: null, guidance: null };
+      console.log('[IG DL v7] 📊 extractComments result:', { fetched: totalFetched, expected, partial, source: extra.source || 'mixed', errorType: errType });
+      return {
+        post_info: postInfo || (post ? buildPostInfo(post) : {}),
+        total: expected,
+        total_expected: expected,
+        total_fetched: totalFetched,
+        total_comments: comments.length,
+        total_replies: totalReplies,
+        comments,
+        partial,
+        complete: !partial,
+        source: extra.source || 'mixed',
+        errorType: errType,
+        error: txt.error,
+        guidance: txt.guidance,
+        resumeCursor: extra.resumeCursor || null,
+        note: null
+      };
+    };
+
     try {
       const postData = await extractPostData();
       if (postData.error) {
         console.error('[IG DL V2] ❌ Error getting post data:', postData.error);
         return postData;
       }
-
-      const post = postData.post;
-
-      console.log('[IG DL V2] Fetching comments for shortcode:', post.code);
-      console.log('[IG DL V2] Post has', post.comment_count, 'total comments');
-      sendProgress(`📊 Found ${post.comment_count} total comments to fetch...`);
-
-      // Try GraphQL first (fast), fall back to REST API if it stops early
-      console.log('[IG DL v7] 🚀 Starting with GraphQL method...');
-
-      let comments = [];
-      let totalReplies = 0;
-
-      // Step 1: Try GraphQL (fast, ~50 comments/page, but may cap at ~800)
-      let graphqlComments = [];
-      try {
-        graphqlComments = await fetchCommentsViaGraphQL(post.code, post.comment_count);
-        console.log('[IG DL v7] ✅ GraphQL fetched', graphqlComments.length, 'comments');
-      } catch (error) {
-        console.warn('[IG DL v7] ⚠️ GraphQL failed:', error.message);
-      }
-
-      // Step 2: If GraphQL got < 80% of expected, try REST API for more
-      const graphqlRatio = post.comment_count > 0 ? graphqlComments.length / post.comment_count : 1;
+      post = postData.post;
+      postInfo = buildPostInfo(post);
       const mediaId = post.pk || post.id;
 
-      if (graphqlRatio < 0.8 && mediaId && post.comment_count > graphqlComments.length) {
-        console.log('[IG DL v7] 🔄 GraphQL only got', Math.round(graphqlRatio * 100) + '% of comments. Trying REST API...');
-        sendProgress(`🔄 GraphQL got ${graphqlComments.length}/${post.comment_count}. Trying REST API for more...`);
+      console.log('[IG DL v7] Fetching comments for shortcode:', post.code, '| expected:', post.comment_count);
+      sendProgress(`📊 Found ${post.comment_count} total comments to fetch...`);
 
+      // Phase 0: best-effort capture of a live doc_id (scroll-only nudge)
+      await ensureDocIdCaptured();
+
+      let source = 'none';
+
+      // Phase 1: modern doc_id GraphQL (primary when a live doc_id was captured)
+      try {
+        const modern = await fetchCommentsModern(mediaId, post.comment_count);
+        addAll(modern.comments);
+        if (modern.comments.length) source = 'intercept';
+        mergeErr(modern.errorType);
+      } catch (e) { mergeErr(classifyErrorType(e)); }
+
+      // Phase 1b: legacy GraphQL hash (cheap; usually empty on modern logged-in sessions)
+      if (accumulated.size === 0) {
         try {
-          const apiComments = await fetchCommentsViaAPI(mediaId, post.comment_count, true);
-          console.log('[IG DL v7] REST API fetched', apiComments.length, 'comments');
-
-          // Use whichever method got more, or merge if REST got additional ones
-          if (apiComments.length > graphqlComments.length) {
-            // REST API got more — merge unique comments from both
-            const seenIds = new Set(apiComments.map(c => String(c.id)));
-            const uniqueFromGraphQL = graphqlComments.filter(c => !seenIds.has(String(c.id)));
-            comments = [...apiComments, ...uniqueFromGraphQL];
-            console.log('[IG DL v7] ✅ Merged: REST(' + apiComments.length + ') + unique GraphQL(' + uniqueFromGraphQL.length + ') = ' + comments.length);
-          } else {
-            // GraphQL still got more — use GraphQL results
-            comments = graphqlComments.map(c => ({ ...c, replies: [] }));
-            console.log('[IG DL v7] ✅ Keeping GraphQL results (' + comments.length + ' comments)');
-          }
-        } catch (error) {
-          console.warn('[IG DL v7] ⚠️ REST API also failed:', error.message);
-          comments = graphqlComments.map(c => ({ ...c, replies: [] }));
-        }
-      } else {
-        // GraphQL got enough, use it
-        comments = graphqlComments.map(c => ({ ...c, replies: [] }));
-        console.log('[IG DL v7] ✅ GraphQL got', comments.length, 'comments (sufficient)');
+          const legacy = await fetchCommentsViaGraphQL(post.code, post.comment_count);
+          addAll(legacy);
+          if (legacy.length) source = (source === 'none') ? 'graphql' : 'mixed';
+        } catch (e) { mergeErr(classifyErrorType(e)); }
       }
 
-      totalReplies = comments.reduce((sum, c) => sum + (c.replies?.length || 0), 0);
-
-      // FINAL VERIFICATION
-      const grandTotal = comments.length + totalReplies;
-
-      console.log('[IG DL v7] 📊 FINAL RESULTS:');
-      console.log('  - Parent comments:', comments.length);
-      console.log('  - Total replies:', totalReplies);
-      console.log('  - Grand total:', grandTotal);
-      console.log('  - Expected:', post.comment_count);
-
-      // Debug: Show sample of comment structure with replies
-      const commentsWithReplies = comments.filter(c => c.replies && c.replies.length > 0);
-      console.log('  - Comments with replies:', commentsWithReplies.length);
-      if (commentsWithReplies.length > 0) {
-        const sample = commentsWithReplies[0];
-        console.log('  - Sample structure:', {
-          comment_text: sample.text.substring(0, 30) + '...',
-          has_replies: sample.replies.length,
-          first_reply: sample.replies[0]?.text?.substring(0, 30) + '...'
-        });
+      // Phase 2: REST top-up when below ~95% of expected (and not hard-blocked)
+      const expected = post.comment_count || 0;
+      const need = expected ? accumulated.size < expected * 0.95 : accumulated.size === 0;
+      if (need && worstErrorType !== 'feedback_required' && worstErrorType !== 'auth') {
+        sendProgress(`🔄 Have ${accumulated.size}/${expected}. Fetching more via REST API...`);
+        const rest = await fetchCommentsViaAPI(mediaId, expected, true);
+        addAll(rest.comments);
+        if (rest.comments.length) source = (source === 'none') ? 'rest' : 'mixed';
+        if (rest.partial) mergeErr(rest.errorType);
+        if (['rate_limit', 'feedback_required', 'auth'].includes(rest.errorType)) sawAbort = true;
+        return buildResult({ source, resumeCursor: rest.resumeCursor });
       }
 
-      if (grandTotal >= post.comment_count) {
-        console.log('  - ✅ SUCCESS! Got all', post.comment_count, 'comments (', Math.round((grandTotal/post.comment_count)*100), '%)');
-      } else {
-        const missing = post.comment_count - grandTotal;
-        const percentage = Math.round((grandTotal / post.comment_count) * 100);
-        console.log('  - ⚠️ Got', percentage, '% (missing', missing, 'comments)');
-      }
-
-      // Build post metadata using helper function
-      const postInfo = buildPostInfo(post);
-
-      return {
-        post_info: postInfo,
-        total: post.comment_count || comments.length,
-        total_comments: comments.length,
-        total_replies: totalReplies,
-        comments,
-        note: null
-      };
+      return buildResult({ source });
 
     } catch (error) {
       console.error('[IG DL v7] ❌ Error extracting comments:', error);
-      console.error('[IG DL v7] Error stack:', error.stack);
-
-      // Get actionable error message
-      const actionableError = getActionableError(error, 'Comment extraction failed');
-
-      return {
-        total: 0,
-        comments: [],
-        error: actionableError.error,
-        errorType: actionableError.type,
-        guidance: actionableError.guidance,
-        debug: {
-          errorMessage: error.message,
-          errorStack: error.stack
-        }
-      };
+      mergeErr(classifyErrorType(error));
+      // NEVER discard: return whatever we collected before the error
+      return buildResult({ forcePartial: true });
     }
   }
 

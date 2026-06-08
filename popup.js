@@ -314,28 +314,35 @@ function showStatus(type, message) {
 function handleExtractedData(data) {
   extractedData = data;
 
-  // Check for errors
+  // Media errors are still fatal (no media object at all)
   if (data.media && data.media.error) {
     showStatus('error', `Media Error: ${data.media.error}`);
     return;
   }
 
-  if (data.comments && data.comments.error) {
-    showStatus('error', `Comments Error: ${data.comments.error}`);
-    return;
-  }
+  // Comments may come back PARTIAL (rate-limited / large post). Never treat a comments
+  // error as fatal when we actually captured some — surface a warning and still let the
+  // user download what was collected.
+  const c = data.comments || {};
+  const hasComments = Array.isArray(c.comments) && c.comments.length > 0;
+  const fetched = (c.total_fetched != null) ? c.total_fetched : (Array.isArray(c.comments) ? c.comments.length : 0);
+  const expected = (c.total_expected != null) ? c.total_expected : (c.total || fetched);
+  const isPartial = c.partial === true;
 
-  // Update UI with stats
   const mediaCount = data.media?.media?.length || 0;
-  const commentCount = data.comments?.total || data.comments?.comments?.length || 0;
-
   mediaCountEl.textContent = mediaCount;
-  commentCountEl.textContent = commentCount;
+  commentCountEl.textContent = (isPartial && expected) ? `${fetched} / ${expected}` : fetched;
 
-  if (mediaCount > 0 || commentCount > 0) {
+  if (mediaCount > 0 || hasComments) {
     statsEl.classList.remove('hidden');
     downloadOptionsEl.classList.remove('hidden');
-    showStatus('success', '✅ Data extracted successfully!');
+    if (isPartial) {
+      showStatus('warning', `⚠️ Partial: ${fetched}${expected ? ' of ' + expected : ''} comments captured${c.guidance ? ' — ' + c.guidance : ''}`);
+    } else {
+      showStatus('success', '✅ Data extracted successfully!');
+    }
+  } else if (c.error) {
+    showStatus('error', `Comments Error: ${c.error}${c.guidance ? ' — ' + c.guidance : ''}`);
   } else {
     showStatus('warning', '⚠️ No data found. Try refreshing the page.');
   }
@@ -537,11 +544,25 @@ extractBtn.addEventListener('click', async () => {
     safeTabSendMessage(tab.id, { action: 'extractMedia' });
     safeTabSendMessage(tab.id, { action: 'extractComments' });
 
-    // Wait for data to be collected (script tag parsing is fast)
-    setTimeout(() => {
+    // Progress-aware poll: large posts can take minutes. The background also pushes
+    // 'currentData' on completion, so this mainly drives the button state. Stop as soon as
+    // a comments array exists (extraction returned — complete or partial) or the cap elapses.
+    const POLL_EVERY = 2000;
+    const MAX_WAIT = (typeof CONFIG !== 'undefined' && CONFIG.TIMING && CONFIG.TIMING.POLL_MAX_WAIT) || 900000;
+    let pollElapsed = 0;
+    if (window.__extractPollTimer) clearInterval(window.__extractPollTimer);
+    if (port) port.postMessage({ action: 'getCurrentData' });
+    window.__extractPollTimer = setInterval(() => {
+      pollElapsed += POLL_EVERY;
       if (port) port.postMessage({ action: 'getCurrentData' });
-      setButtonLoading(extractBtn, false);
-    }, 3000);
+      const c = extractedData && extractedData.comments;
+      const done = c && Array.isArray(c.comments);
+      if (done || pollElapsed >= MAX_WAIT) {
+        clearInterval(window.__extractPollTimer);
+        window.__extractPollTimer = null;
+        setButtonLoading(extractBtn, false);
+      }
+    }, POLL_EVERY);
 
   } catch (error) {
     showStatus('error', `Error: ${error.message}`);
@@ -644,13 +665,16 @@ async function buildCommentsFilename(postInfo, extension) {
 
 // Download comments only (JSON)
 downloadJsonBtn.addEventListener('click', async () => {
-  if (!extractedData.comments || !extractedData.comments.comments) {
+  if (!extractedData.comments || !Array.isArray(extractedData.comments.comments) || extractedData.comments.comments.length === 0) {
     showStatus('error', 'No comments to download');
     return;
   }
 
   setButtonLoading(downloadJsonBtn, true);
-  showStatus('info', '⏳ Downloading comments as JSON...');
+  const _partialNote = extractedData.comments.partial
+    ? ` (partial: ${extractedData.comments.total_fetched ?? extractedData.comments.comments.length}${extractedData.comments.total_expected ? ' of ' + extractedData.comments.total_expected : ''})`
+    : '';
+  showStatus('info', `⏳ Downloading comments as JSON${_partialNote}...`);
 
   const filename = await buildCommentsFilename(extractedData.comments.post_info || {}, 'json');
   const saveAs = askWhereToSaveCheckbox?.checked || false;
@@ -670,13 +694,16 @@ downloadJsonBtn.addEventListener('click', async () => {
 
 // Download comments only (CSV)
 downloadCsvBtn.addEventListener('click', async () => {
-  if (!extractedData.comments || !extractedData.comments.comments) {
+  if (!extractedData.comments || !Array.isArray(extractedData.comments.comments) || extractedData.comments.comments.length === 0) {
     showStatus('error', 'No comments to download');
     return;
   }
 
   setButtonLoading(downloadCsvBtn, true);
-  showStatus('info', '⏳ Downloading comments as CSV...');
+  const _partialNote = extractedData.comments.partial
+    ? ` (partial: ${extractedData.comments.total_fetched ?? extractedData.comments.comments.length}${extractedData.comments.total_expected ? ' of ' + extractedData.comments.total_expected : ''})`
+    : '';
+  showStatus('info', `⏳ Downloading comments as CSV${_partialNote}...`);
 
   const filename = await buildCommentsFilename(extractedData.comments.post_info || {}, 'csv');
   const saveAs = askWhereToSaveCheckbox?.checked || false;

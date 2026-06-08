@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.3.6',
-  VERSION_NAME: 'V8.3.6 - Fix Real Name in Filenames for Manual Buttons',
-  RELEASE_DATE: '2026-04-27',
+  VERSION: '8.3.7',
+  VERSION_NAME: 'V8.3.7 - Batch Avatars/Screenshots Fix + Resilient Large-Post Comment Capture',
+  RELEASE_DATE: '2026-06-08',
 
   // ============================================================================
   // TIMING & DELAYS
@@ -24,7 +24,8 @@ const CONFIG = {
     EXTRACTION_WAIT_TIMEOUT: 3000,            // How long popup waits for extraction (ms)
     POLL_INTERVAL_START: 500,                 // Initial polling interval (ms)
     POLL_INTERVAL_MAX: 2000,                  // Maximum polling interval (ms)
-    POLL_MAX_WAIT: 300000,                    // Max time to wait for data (ms) - 5 min for posts with thousands of comments
+    POLL_MAX_WAIT: 900000,                    // Max time to wait for data (ms) - 15 min for very large posts (10k+ comments)
+    POLL_INACTIVITY_TIMEOUT: 45000,           // Abort if no extraction progress arrives for this long (ms) - the real safety net
     POLL_BACKOFF_MULTIPLIER: 1.5,             // Exponential backoff multiplier
 
     // Button UI feedback
@@ -120,7 +121,8 @@ const CONFIG = {
     CHILD_COMMENTS_ENDPOINT: '/api/v1/media/{mediaId}/comments/{commentId}/child_comments/',
 
     // API parameters
-    GRAPHQL_QUERY_HASH: 'f0986789a5c5d17c2400faebf16efd0d',
+    GRAPHQL_QUERY_HASH: 'f0986789a5c5d17c2400faebf16efd0d',  // LEGACY persisted-query hash (often 401s on modern logged-in sessions) - last-resort fallback only
+    GRAPHQL_DOC_ID_FALLBACK: '',              // Optional hardcoded doc_id fallback; primary path captures the live doc_id from the page's own comment requests
     COMMENTS_PER_PAGE: 50,                    // How many comments to fetch per request
 
     // API headers
@@ -139,8 +141,9 @@ const CONFIG = {
     FETCH_TIMEOUT: 30000,                     // Timeout for fetch requests (ms)
 
     // Request limits
-    MAX_GRAPHQL_REQUESTS: 200,                // Safety limit for GraphQL pagination
-    MAX_API_REQUESTS: 200,                    // Safety limit for API pagination
+    MAX_GRAPHQL_REQUESTS: 400,                // Safety limit for GraphQL pagination (raised for 10k+ comment posts)
+    MAX_API_REQUESTS: 400,                    // Safety limit for API pagination (400 x 50 = 20,000 comments reachable)
+    MAX_COMMENT_FETCH: 40000,                 // Absolute ceiling on comments fetched per post (overridable via chrome.storage)
     MAX_CHILD_COMMENT_REQUESTS: 20,           // Safety limit for reply pagination
   },
 

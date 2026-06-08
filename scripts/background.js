@@ -537,10 +537,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === 'POST_DATA_RESPONSE') {
     currentData.postData = message.data;
+    if (sender.tab?.id) currentData.sourceTabId = sender.tab.id;
   } else if (message.type === 'COMMENTS_RESPONSE') {
     currentData.comments = message.data;
+    if (sender.tab?.id) currentData.sourceTabId = sender.tab.id;
+    // Push results to any connected popup/sidepanel so late-arriving (and partial) comment
+    // data appears without the user re-clicking extract. Suppressed during batch (the UI
+    // shows batch progress then, and single-post data would clobber it).
+    if (!batchState.isProcessing) {
+      broadcastToUI({ type: 'currentData', data: currentData });
+    }
   } else if (message.type === 'MEDIA_RESPONSE') {
     currentData.media = message.data;
+    if (sender.tab?.id) currentData.sourceTabId = sender.tab.id;
   } else if (message.type === 'EXTRACTION_PROGRESS') {
     // Track that extraction is still actively running
     currentData.lastProgressTime = Date.now();
@@ -1169,9 +1178,26 @@ function getFileExtension(url, isVideo = false) {
   return 'jpg';
 }
 
+// Resolve the tab whose content script should service media/avatar fetches.
+// During batch the active tab is whatever the user switched to (often a non-Instagram
+// tab with no content script), so callers pass the batch/source tab id explicitly.
+// Manual flows omit it and fall back to the active tab.
+async function resolveContentTab(tabId = null) {
+  if (tabId != null) {
+    try {
+      return await chrome.tabs.get(tabId);
+    } catch (e) {
+      console.warn('[Background] resolveContentTab: tab', tabId, 'unavailable:', e.message);
+      return null;
+    }
+  }
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab || null;
+}
+
 // Helper function to fetch avatars via content script
 // Includes 20-second timeout to prevent indefinite hangs
-async function fetchAvatarsViaContentScript(urls) {
+async function fetchAvatarsViaContentScript(urls, tabId = null) {
   if (!urls || urls.length === 0) {
     console.log('[Background] No avatar URLs to fetch');
     return {};
@@ -1180,14 +1206,13 @@ async function fetchAvatarsViaContentScript(urls) {
   const AVATAR_FETCH_TIMEOUT = 20000; // 20 seconds
 
   try {
-    // Get active tab
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await resolveContentTab(tabId);
     if (!tab) {
-      console.error('[Background] No active tab found');
+      console.error('[Background] No tab available for avatar fetch');
       return {};
     }
 
-    console.log('[Background] Active tab:', tab.id, tab.url);
+    console.log('[Background] Avatar fetch via tab:', tab.id, tab.url);
     console.log('[Background] Requesting', urls.length, 'avatars from content script...');
     console.log('[Background] URLs to fetch:', urls);
 
@@ -1221,16 +1246,15 @@ async function fetchAvatarsViaContentScript(urls) {
 
 // Helper function to fetch a single media item as base64 via content script
 // Includes 15-second timeout to prevent indefinite hangs
-async function fetchSingleMediaAsBase64(url, isVideo = false) {
+async function fetchSingleMediaAsBase64(url, isVideo = false, tabId = null) {
   if (!url) return null;
 
   const MEDIA_FETCH_TIMEOUT = 15000; // 15 seconds
 
   try {
-    // Get active tab
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = await resolveContentTab(tabId);
     if (!tab) {
-      console.error('[Background] No active tab found for media fetch');
+      console.error('[Background] No tab available for media fetch');
       return null;
     }
 
@@ -1321,7 +1345,7 @@ async function fetchMediaViaContentScript(mediaItems) {
 }
 
 // Helper function to generate HTML archive
-async function generatePostHTML(postData, mediaFilePrefix = null) {
+async function generatePostHTML(postData, mediaFilePrefix = null, sourceTabId = null) {
   const media = postData.media?.media || [];
   const comments = postData.comments?.comments || [];
   const post_info = postData.media?.post_info || postData.comments?.post_info || {};
@@ -1355,7 +1379,7 @@ async function generatePostHTML(postData, mediaFilePrefix = null) {
 
   // Fetch all profile pictures via content script (keep avatars as base64 since they're small)
   console.log('[Background] About to fetch avatars, URLs:', Array.from(profilePicUrls));
-  const avatarCache = await fetchAvatarsViaContentScript(Array.from(profilePicUrls));
+  const avatarCache = await fetchAvatarsViaContentScript(Array.from(profilePicUrls), sourceTabId);
   console.log('[Background] Avatar cache keys:', Object.keys(avatarCache));
   console.log('[Background] Avatar cache has', Object.keys(avatarCache).length, 'entries');
 
@@ -1688,7 +1712,7 @@ chrome.runtime.onConnect.addListener((port) => {
           const postInfo = currentData.media?.post_info || currentData.comments?.post_info || {};
           const mediaFilePrefix = buildFilePrefix(postInfo);
 
-          const htmlContent = await generatePostHTML(currentData, mediaFilePrefix);
+          const htmlContent = await generatePostHTML(currentData, mediaFilePrefix, currentData.sourceTabId);
           await downloadHTML(htmlContent, filename, saveAs);
 
           port.postMessage({
@@ -1715,7 +1739,7 @@ chrome.runtime.onConnect.addListener((port) => {
             const mediaUrl = media.video_url || media.image_url;
             console.log('[Background] Fetching media for screenshot:', mediaUrl?.substring(0, 50) + '...', 'isVideo:', isVideo);
 
-            const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo);
+            const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo, currentData.sourceTabId);
             if (!mediaDataUrl) {
               throw new Error('Failed to fetch media for screenshot');
             }
@@ -1724,7 +1748,7 @@ chrome.runtime.onConnect.addListener((port) => {
             // Fetch avatar as base64 if available
             let avatarDataUrl = null;
             if (postInfo.profile_pic_url) {
-              const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url]);
+              const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url], currentData.sourceTabId);
               avatarDataUrl = avatarCache[postInfo.profile_pic_url] || null;
             }
 
@@ -1843,7 +1867,7 @@ chrome.runtime.onConnect.addListener((port) => {
             message: '🌐 Generating HTML archive...'
           });
 
-          const htmlContent = await generatePostHTML(currentData, filePrefix);
+          const htmlContent = await generatePostHTML(currentData, filePrefix, currentData.sourceTabId);
           const htmlFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_archive.html`;
           await downloadHTML(htmlContent, htmlFilename, false);
 
@@ -1862,13 +1886,13 @@ chrome.runtime.onConnect.addListener((port) => {
               const mediaUrl = media.video_url || media.image_url;
               console.log('[Background] Fetching media for downloadAll screenshot...', 'isVideo:', isVideo);
 
-              const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo);
+              const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo, currentData.sourceTabId);
 
               if (mediaDataUrl) {
                 // Fetch avatar as base64 if available
                 let avatarDataUrl = null;
                 if (postInfo.profile_pic_url) {
-                  const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url]);
+                  const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url], currentData.sourceTabId);
                   avatarDataUrl = avatarCache[postInfo.profile_pic_url] || null;
                 }
 
@@ -2646,10 +2670,10 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
       // Wait for extractions to complete with progress-aware polling.
       // Keeps waiting as long as progress updates arrive (comments still being fetched).
-      // Gives up after POLL_MAX_WAIT total OR 30s of no progress.
+      // Gives up after POLL_MAX_WAIT total OR POLL_INACTIVITY_TIMEOUT of no progress.
       console.log('[Background] Waiting for extraction to complete...');
       const maxWaitTime = CONFIG.TIMING.POLL_MAX_WAIT;
-      const INACTIVITY_TIMEOUT = 30000; // Give up if no progress for 30s
+      const INACTIVITY_TIMEOUT = CONFIG.TIMING.POLL_INACTIVITY_TIMEOUT || 45000; // Give up if no progress for this long
       let pollInterval = CONFIG.TIMING.POLL_INTERVAL_START; // Start at 500ms
       let waited = 0;
       currentData.lastProgressTime = Date.now();
@@ -2804,7 +2828,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         // Download HTML archive (wait a bit to ensure content script is ready for avatar fetching)
         try {
           await new Promise(resolve => setTimeout(resolve, 1000));
-          const htmlContent = await generatePostHTML(currentData, filePrefix);
+          const htmlContent = await generatePostHTML(currentData, filePrefix, batchState.tabId);
           const htmlFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_archive.html`;
           await downloadHTML(htmlContent, htmlFilename, false);
         } catch (downloadErr) {
@@ -2812,11 +2836,45 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           downloadErrors.push(`html_archive: ${downloadErr.message}`);
         }
 
-        // Log any download errors and broadcast to UI
+        // Capture Instagram-style screenshot
+        try {
+          console.log('[Background] Rendering batch screenshot...');
+
+          const media = currentData.media?.media?.[0];
+          if (media) {
+            // Fetch the first media as base64 (handle videos by capturing a frame)
+            const isVideo = !!media.video_url;
+            const mediaUrl = media.video_url || media.image_url;
+
+            const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo, batchState.tabId);
+
+            if (mediaDataUrl) {
+              // Fetch avatar as base64 if available
+              let avatarDataUrl = null;
+              if (postInfo.profile_pic_url) {
+                const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url], batchState.tabId);
+                avatarDataUrl = avatarCache[postInfo.profile_pic_url] || null;
+              }
+
+              // Render the screenshot
+              const screenshotDataUrl = await renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl);
+
+              const screenshotFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_screenshot.png`;
+              await downloadFile(screenshotDataUrl, screenshotFilename, false);
+            } else {
+              console.warn('[Background] Could not fetch media for batch screenshot');
+              downloadErrors.push('screenshot: media fetch returned empty (Instagram tab not reachable from background?)');
+            }
+          }
+        } catch (error) {
+          console.error('[Background] Screenshot failed:', error);
+          downloadErrors.push(`screenshot: ${error.message}`);
+        }
+
+        // Log any download errors (metadata / html / screenshot) and broadcast to UI so the
+        // user sees when a batch item was saved only partially (e.g. avatars/screenshot missing).
         if (downloadErrors.length > 0) {
           console.warn(`[Background] ⚠️ Some downloads failed for ${tab.url}:`, downloadErrors);
-
-          // Broadcast download errors to UI so user is aware
           broadcastToUI({
             type: 'batchProgress',
             data: {
@@ -2830,39 +2888,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
               downloadErrors: downloadErrors
             }
           });
-        }
-
-        // Capture Instagram-style screenshot
-        try {
-          console.log('[Background] Rendering batch screenshot...');
-
-          const media = currentData.media?.media?.[0];
-          if (media) {
-            // Fetch the first media as base64 (handle videos by capturing a frame)
-            const isVideo = !!media.video_url;
-            const mediaUrl = media.video_url || media.image_url;
-
-            const mediaDataUrl = await fetchSingleMediaAsBase64(mediaUrl, isVideo);
-
-            if (mediaDataUrl) {
-              // Fetch avatar as base64 if available
-              let avatarDataUrl = null;
-              if (postInfo.profile_pic_url) {
-                const avatarCache = await fetchAvatarsViaContentScript([postInfo.profile_pic_url]);
-                avatarDataUrl = avatarCache[postInfo.profile_pic_url] || null;
-              }
-
-              // Render the screenshot
-              const screenshotDataUrl = await renderInstagramScreenshot(postInfo, mediaDataUrl, avatarDataUrl);
-
-              const screenshotFilename = `Instagram/${parentFolder}/${folderName}/${filePrefix}_screenshot.png`;
-              await downloadFile(screenshotDataUrl, screenshotFilename, false);
-            } else {
-              console.warn('[Background] Could not fetch media for batch screenshot');
-            }
-          }
-        } catch (error) {
-          console.error('[Background] Screenshot failed:', error);
         }
 
         console.log('[Background] Successfully downloaded:', tab.url);
