@@ -1596,6 +1596,10 @@ chrome.runtime.onConnect.addListener((port) => {
             type: 'currentData',
             data: currentData
           });
+        } else if (msg.action === 'clearCurrentData') {
+          // Reset before a fresh single-post extraction so the UI poll can't latch onto the
+          // PREVIOUS post's comments (currentData is module-level and otherwise persists).
+          currentData = { postData: null, comments: null, media: null };
         } else if (msg.action === 'getBatchState') {
           // Send current batch state to UI (for reconnection scenarios)
           if (batchState.isProcessing) {

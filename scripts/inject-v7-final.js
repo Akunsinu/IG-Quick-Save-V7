@@ -275,6 +275,7 @@
       const maxReq = CONFIG.API.MAX_GRAPHQL_REQUESTS;
       const hardCap = CONFIG.API.MAX_COMMENT_FETCH || Infinity;
       result.source = 'intercept';
+      let prevCursor = null;
 
       while (hasNext && req < maxReq && result.comments.length < hardCap) {
         req++;
@@ -314,9 +315,11 @@
         sendProgress(expectedTotal
           ? `💬 Fetching comments: ${result.comments.length}/${expectedTotal}...`
           : `💬 Fetched ${result.comments.length} comments so far...`);
-        if (hasNext && cursor) {
+        if (hasNext && cursor && cursor !== prevCursor) {
+          prevCursor = cursor;
           await new Promise(r => setTimeout(r, getAdaptiveDelay('graphql')));
         } else {
+          // No forward progress (cursor not advancing / no page_info) -> stop; REST takes over
           hasNext = false;
         }
       }
@@ -957,9 +960,9 @@
               if (response.status >= 500) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText} (retryable)`);
               }
-              // Other client error - don't retry
+              // Other client error (e.g. 404/400) - don't retry
               console.error('[IG DL v7] ❌ HTTP Error:', response.status, response.statusText);
-              throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+              throw new Error(`client_error:HTTP ${response.status}: ${response.statusText}`);
             }
 
             data = await response.json();
@@ -970,6 +973,14 @@
             if (error.message && error.message.startsWith('account_block:')) {
               console.error('[IG DL v7] 🛑 Account-level block detected:', error.message);
               aborted = true;
+              break;
+            }
+
+            // Non-retryable client error (404/400/etc): abort immediately, keep what we have
+            if (error.message && error.message.startsWith('client_error:')) {
+              console.error('[IG DL v7] ⛔ Non-retryable client error:', error.message);
+              aborted = true;
+              abortType = classifyErrorType(error);
               break;
             }
 
@@ -1100,7 +1111,7 @@
 
       if (skipReplies) {
         console.log('[IG DL v7] ⚡ Skipping reply fetching (skipReplies mode enabled)');
-      } else if (isRateLimited) {
+      } else if (isRateLimited || aborted) {
         console.log('[IG DL v7] 🚫 Skipping reply fetching (rate limited)');
         console.log('[IG DL v7] You can try extracting again in 5-10 minutes to get replies');
       } else {
@@ -1238,7 +1249,16 @@
       const postData = await extractPostData();
       if (postData.error) {
         console.error('[IG DL V2] ❌ Error getting post data:', postData.error);
-        return postData;
+        // Return a valid (empty) comments shape so the UI poll always terminates and
+        // downstream Array.isArray(comments) checks behave consistently.
+        return {
+          post_info: {}, total: 0, total_expected: 0, total_fetched: 0,
+          total_comments: 0, total_replies: 0, comments: [],
+          partial: true, complete: false, source: 'none',
+          errorType: 'unknown', error: postData.error,
+          guidance: 'Make sure you are on a fully-loaded post/reel page, then try again.',
+          resumeCursor: null, note: null
+        };
       }
       post = postData.post;
       postInfo = buildPostInfo(post);
@@ -1368,7 +1388,20 @@
       window.postMessage({ type: 'POST_DATA_RESPONSE', data }, window.location.origin);
     } else if (event.data.type === 'EXTRACT_COMMENTS') {
       console.log('[IG DL v7] 🔔 EXTRACT_COMMENTS message received!');
-      const data = await extractComments();
+      let data;
+      try {
+        data = await extractComments();
+      } catch (err) {
+        // extractComments is contracted never to throw, but guarantee a response either way
+        console.error('[IG DL v7] extractComments threw (posting empty shape):', err);
+        data = {
+          post_info: {}, total: 0, total_expected: 0, total_fetched: 0,
+          total_comments: 0, total_replies: 0, comments: [],
+          partial: true, complete: false, source: 'none',
+          errorType: 'unknown', error: (err && err.message) || 'Comment extraction failed',
+          guidance: 'Try refreshing the page and extracting again.', resumeCursor: null, note: null
+        };
+      }
       console.log('[IG DL v7] 📤 Sending COMMENTS_RESPONSE with', data.comments?.length || 0, 'comments');
       window.postMessage({ type: 'COMMENTS_RESPONSE', data }, window.location.origin);
     } else if (event.data.type === 'EXTRACT_MEDIA') {

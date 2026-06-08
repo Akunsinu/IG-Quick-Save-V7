@@ -425,7 +425,7 @@ function startExtractPoll() {
     pollElapsed += POLL_EVERY;
     if (port) port.postMessage({ action: 'getCurrentData' });
     const cc = extractedData && extractedData.comments;
-    const done = cc && Array.isArray(cc.comments);
+    const done = !!(cc && (Array.isArray(cc.comments) || cc.error));
     if (done || pollElapsed >= MAX_WAIT) {
       clearInterval(window.__extractPollTimer);
       window.__extractPollTimer = null;
@@ -596,6 +596,8 @@ extractBtn.addEventListener('click', async () => {
           // Wait a bit more for Instagram to render, then extract
           setTimeout(async () => {
             showStatus('info', '⏳ Extracting data...');
+            extractedData = { media: null, comments: null };
+            if (port) port.postMessage({ action: 'clearCurrentData' });
             safeTabSendMessage(tab.id, { action: 'extractMedia' });
             safeTabSendMessage(tab.id, { action: 'extractComments' });
 
@@ -621,6 +623,9 @@ extractBtn.addEventListener('click', async () => {
       return;
     }
 
+    // Reset stale state so the poll can't latch onto the previous post's comments
+    extractedData = { media: null, comments: null };
+    if (port) port.postMessage({ action: 'clearCurrentData' });
     // Request data extraction from content script
     safeTabSendMessage(tab.id, { action: 'extractMedia' });
     safeTabSendMessage(tab.id, { action: 'extractComments' });

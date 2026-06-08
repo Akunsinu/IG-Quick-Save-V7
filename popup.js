@@ -540,6 +540,11 @@ extractBtn.addEventListener('click', async () => {
       return;
     }
 
+    // Reset stale state (background currentData persists across single-post extractions)
+    // so the poll can't latch onto the PREVIOUS post's comments.
+    extractedData = { media: null, comments: null };
+    if (port) port.postMessage({ action: 'clearCurrentData' });
+
     // Request data extraction from content script
     safeTabSendMessage(tab.id, { action: 'extractMedia' });
     safeTabSendMessage(tab.id, { action: 'extractComments' });
@@ -556,7 +561,7 @@ extractBtn.addEventListener('click', async () => {
       pollElapsed += POLL_EVERY;
       if (port) port.postMessage({ action: 'getCurrentData' });
       const c = extractedData && extractedData.comments;
-      const done = c && Array.isArray(c.comments);
+      const done = !!(c && (Array.isArray(c.comments) || c.error));
       if (done || pollElapsed >= MAX_WAIT) {
         clearInterval(window.__extractPollTimer);
         window.__extractPollTimer = null;
