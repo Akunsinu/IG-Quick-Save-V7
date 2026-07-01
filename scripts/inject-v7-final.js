@@ -658,7 +658,20 @@
       const url = window.location.href;
       const shortcodeMatch = url.match(/\/(p|reel)\/([^\/\?]+)/);
       const shortcode = shortcodeMatch ? shortcodeMatch[2] : '';
-      return { shortcode, post: cachedPostData, method: 'cached' };
+
+      // GUARD: only trust the cache if it actually matches the URL we're on.
+      // The SPA cache-invalidation (clearCacheIfUrlChanged + history hooks) can miss
+      // Instagram's page-world router transitions, which would otherwise return the
+      // PREVIOUS post's owner/metadata stamped with the CURRENT shortcode
+      // (root cause of posts synced under the wrong account).
+      if (cachedPostData.code === shortcode) {
+        return { shortcode, post: cachedPostData, method: 'cached' };
+      }
+
+      console.warn('[IG DL v7] ⚠️ Cached post code', cachedPostData.code,
+        '≠ URL shortcode', shortcode, '— discarding stale cache and re-parsing');
+      cachedPostData = null;
+      cachedPostUrl = null;
     }
 
     return parsePostDataFromScripts();

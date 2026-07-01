@@ -7,9 +7,9 @@ const CONFIG = {
   // VERSION INFO
   // ============================================================================
 
-  VERSION: '8.3.7',
-  VERSION_NAME: 'V8.3.7 - Batch Avatars/Screenshots Fix + Resilient Large-Post Comment Capture',
-  RELEASE_DATE: '2026-06-08',
+  VERSION: '8.3.8',
+  VERSION_NAME: 'V8.3.8 - Fix wrong-account attribution from stale post cache',
+  RELEASE_DATE: '2026-07-01',
 
   // ============================================================================
   // TIMING & DELAYS

@@ -2903,11 +2903,50 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
           // Determine post type from URL if not in postInfo
           const urlPostType = tab.url.includes('/reel/') ? 'reel' : 'post';
 
+          // DEFENSE-IN-DEPTH: post_info is built from the extracted post object, whose
+          // `shortcode` (post.code) must match the URL we actually navigated to. If they
+          // disagree, the extraction handed back a stale/mismatched post (e.g. a missed
+          // SPA cache invalidation), and postInfo.username/full_name belong to the WRONG
+          // account. Never attribute a row to that stale handle — fall back to the profile
+          // username (if this is a profile batch) or 'unknown', and flag it for review.
+          const postInfoShortcode = postInfo.shortcode || postInfo.code || null;
+          const staleAttribution = postInfoShortcode && postInfoShortcode !== downloadedShortcode;
+          if (staleAttribution) {
+            console.error('[Background] 🛑 Stale post_info detected for', tab.url,
+              '— post_info.shortcode', postInfoShortcode, '≠ URL shortcode', downloadedShortcode,
+              '; refusing to attribute to wrong account:', postInfo.username);
+            addFailedUrl({
+              url: tab.url,
+              error: `Stale attribution: post_info was for ${postInfoShortcode} (${postInfo.username}), not ${downloadedShortcode}`,
+              partialData: true,
+              shortcode: downloadedShortcode
+            });
+            broadcastToUI({
+              type: 'batchProgress',
+              data: {
+                current: batchState.currentIndex + 1,
+                total: batchState.queue.length,
+                url: tab.url,
+                successCount: batchState.successCount,
+                skippedCount: batchState.skippedCount,
+                failedUrls: batchState.failedUrls,
+                downloadWarning: `⚠️ Wrong-account guard: metadata mismatch, attribution withheld for ${downloadedShortcode}`
+              }
+            });
+          }
+
+          const safeUsername = staleAttribution
+            ? (batchState.profileUsername || 'unknown')
+            : (postInfo.username || batchState.profileUsername || 'unknown');
+
           const enrichedPostInfo = {
             ...postInfo,
             shortcode: downloadedShortcode,
+            // If the extracted post didn't match this URL, drop the stale owner fields
+            // so we don't log the wrong real_name/full_name/collaborators to the sheet.
+            ...(staleAttribution ? { full_name: '', collaborators: [], _attributionMismatch: true } : {}),
             // Use batchState.profileUsername as fallback for username
-            username: postInfo.username || batchState.profileUsername || 'unknown',
+            username: safeUsername,
             // Ensure post_type is lowercase and derived from URL if missing
             post_type: postInfo.post_type || urlPostType,
             media_count: currentData.media?.media?.length || 0,
